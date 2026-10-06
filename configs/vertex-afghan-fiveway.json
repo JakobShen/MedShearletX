@@ -1,0 +1,81 @@
+{
+  "model": {
+    "backend": "vertex",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "VERTEX_API_KEY",
+    "max_output_tokens": 128,
+    "generation_options": {
+      "thinkingConfig": {
+        "thinkingLevel": "MINIMAL"
+      }
+    }
+  },
+  "task": {
+    "labels": [
+      "Afghan hound",
+      "beagle",
+      "golden retriever",
+      "English foxhound",
+      "bulldog"
+    ],
+    "question": "What dog breed is visible in this image? Classify it using the complete candidate set."
+  },
+  "image_path": "code/imgs/ILSVRC2012_val_00017625.JPEG",
+  "image_size": 256,
+  "resize_mode": "stretch",
+  "transform": {
+    "name": "shearlet",
+    "scales": 4
+  },
+  "selection_samples": 32,
+  "evaluation_samples": 128,
+  "evaluation_workers": 8,
+  "optimization_sampling": {
+    "repeats": 2,
+    "temperature": 1.0,
+    "workers": 2
+  },
+  "retry": {
+    "retry_budget": 32,
+    "max_attempts": 3,
+    "backoff_seconds": 0.5
+  },
+  "explainer": {
+    "steps": 150,
+    "learning_rate": 0.1,
+    "perturbation_size": 0.1,
+    "mask_init": 1.0,
+    "distortion_weight": 1.0,
+    "mask_weight": 1.0,
+    "spatial_weight": 2.0,
+    "noise": "uniform",
+    "noise_samples": 16,
+    "noise_workers": 4,
+    "seed": 42,
+    "fidelity_reference": "one",
+    "noise_channels": "shared_gray",
+    "resample_noise": true,
+    "spatial_domain": "gray_clipped",
+    "normalize_final": true,
+    "unbiased_sampling_distortion": true,
+    "optimizer": "hybrid_adam",
+    "max_requests": 14500,
+    "directions": 1,
+    "mask_resolution": "full",
+    "mask_selection": "last",
+    "obfuscation_coefficient_clip": true,
+    "fidelity_loss": "squared_error"
+  },
+  "max_total_requests": 15000,
+  "run_name": "vertex-afghan-fiveway-full",
+  "sample_id": "imagenet_afghan_hound_00017625",
+  "image_metadata": {
+    "source": "original repository ImageNet JPEG",
+    "example_breed": "Afghan hound",
+    "label_source": "upstream notebook example, not independently adjudicated"
+  },
+  "run_role": "released_code_reference_with_API_score_and_gradient",
+  "protocol_reference": "released Afghan notebook and code/shearletx.py",
+  "reference_steps": 150,
+  "resize_filter": "tensor_bilinear"
+}

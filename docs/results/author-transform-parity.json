@@ -1,0 +1,114 @@
+{
+  "status": "pass",
+  "scope": "Actual default 4-scale 256x256 transform and local rendering/obfuscation paths; no optimizer or model-feature claim.",
+  "reference": "Independent literal NumPy/SciPy translations of torchsheardec2D/torchshearrec2D in code/shearletx.py.",
+  "upstream_source_sha256": "dca7d4b1228fe38b43eb540218bcbb484b961b2aa6e5fc9980af182aaec36958",
+  "transform_source_sha256": "80c2ffb29d95799d5092cf010a8ee9e41eae0a79203be87b80949dc050b766e6",
+  "input_sha256": "f0587bbd32d7cd0d09ad9b26b561b3d10bfc074618c3ef2e62f858ee215962e4",
+  "input": "code/imgs/ILSVRC2012_val_00017625.JPEG",
+  "input_float_dtype": "float32",
+  "preprocessing": "256 stretch tensor bilinear, align_corners=False, antialias=False; float input retained",
+  "coefficient_shape": [
+    3,
+    49,
+    256,
+    256
+  ],
+  "mask_shape": [
+    49,
+    256,
+    256
+  ],
+  "mask_parameters": 3211264,
+  "mask_seed": 4629,
+  "filter_dtype": "complex128",
+  "filter_max_abs_imaginary": 7.967989741557554e-16,
+  "filter_max_abs_real": 0.9999999999999978,
+  "filter_conjugation_difference": 1.5935979483115108e-15,
+  "float64_absolute_tolerance": 5e-11,
+  "author_float32_absolute_tolerance": 3e-06,
+  "float32_strided_mean_absolute_tolerance": 1e-05,
+  "comparisons": {
+    "analysis_rgb_float64_formula": {
+      "max_abs_error": 5.551115123125783e-16,
+      "root_mean_square_error": 1.5196643373564518e-17
+    },
+    "analysis_rgb_author_float32": {
+      "max_abs_error": 2.5286791660583674e-07,
+      "root_mean_square_error": 9.463222903783996e-09
+    },
+    "random_full_mask_synthesis_float64_formula": {
+      "max_abs_error": 3.3306690738754696e-16,
+      "root_mean_square_error": 6.641106334972325e-17
+    },
+    "random_full_mask_synthesis_author_float32": {
+      "max_abs_error": 2.4314726881913273e-07,
+      "root_mean_square_error": 5.8044030089158195e-08
+    },
+    "gray_analysis_equals_rgb_mean_float64": {
+      "max_abs_error": 5.551115123125783e-16,
+      "root_mean_square_error": 2.3727975654578207e-17
+    },
+    "gray_analysis_author_float32": {
+      "max_abs_error": 1.9570375597854905e-07,
+      "root_mean_square_error": 8.998677456928791e-09
+    },
+    "shared_gray_mean_float32_strided_reduction": {
+      "max_abs_error": 5.424566557388211e-06,
+      "root_mean_square_error": 7.749404658994132e-07
+    },
+    "shared_gray_mean_float32_contiguous_reduction": {
+      "max_abs_error": 5.438828276638219e-10,
+      "root_mean_square_error": 8.351891732557635e-11
+    },
+    "shared_gray_mean_float32_float64_accumulator": {
+      "max_abs_error": 2.919527952727208e-10,
+      "root_mean_square_error": 4.366488707180905e-11
+    },
+    "shared_gray_sample_std_author_float32": {
+      "max_abs_error": 7.80876222628013e-07,
+      "root_mean_square_error": 1.4271067022013897e-07
+    },
+    "final_clip_max_float64_formula": {
+      "max_abs_error": 6.661338147750939e-16,
+      "root_mean_square_error": 1.227713473967778e-16
+    },
+    "final_clip_max_author_float32": {
+      "max_abs_error": 4.6847346779621546e-07,
+      "root_mean_square_error": 1.1387722445897894e-07
+    },
+    "core_obfuscation_png": {
+      "max_abs_error": 0.0,
+      "root_mean_square_error": 0.0
+    },
+    "core_final_clip_max_png": {
+      "max_abs_error": 0.0,
+      "root_mean_square_error": 0.0
+    },
+    "core_removed_png": {
+      "max_abs_error": 0.0,
+      "root_mean_square_error": 0.0
+    },
+    "core_spatial_penalty_mean": {
+      "max_abs_error": 0.0,
+      "root_mean_square_error": 0.0
+    }
+  },
+  "author_float32_png_max_lsb_difference": 1,
+  "author_float32_png_changed_value_fraction": 1.0172526041666666e-05,
+  "clip_before_inverse_vs_after_inverse_changed_value_fraction": 0.8337453206380209,
+  "vlm_calls": 0,
+  "offline_capture_predictions": 4,
+  "versions": {
+    "python": "3.12.14",
+    "numpy": "1.26.4",
+    "scipy": "1.17.1"
+  },
+  "limits": [
+    "NumPy/SciPy float32 arithmetic and reduction order are not a CUDA FFT bitwise reproduction; the strided mean discrepancy disappears with contiguous layout or float64 accumulation.",
+    "Even 256 spatial dimensions and this effectively real default filter bank are tested; custom complex or odd-size banks are outside scope.",
+    "Transform parity does not establish optimization convergence or explain Gemini's reliance on any image feature."
+  ],
+  "test_command": ".venv/bin/python -m unittest tests.test_transform_parity -v",
+  "tests_passed": 6
+}

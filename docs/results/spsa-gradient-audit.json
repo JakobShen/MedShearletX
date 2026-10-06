@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-10-06T21:23:46.378452+00:00",
+  "scope": "Offline mathematical calculations and read-only run-history snapshot; no provider calls or core changes.",
+  "snapshot_is_not_final": true,
+  "full_mask_parameters": {
+    "bands": 49,
+    "height": 256,
+    "width": 256,
+    "dimension": 3211264,
+    "directions": 1
+  },
+  "linear_directional_error": {
+    "formula": "E[||g_hat-g||^2] = (d-1)*||g||^2/R",
+    "relative_vector_rmse": 1791.999720982121,
+    "assumptions": [
+      "Nonzero gradient of a noiseless linear fidelity objective.",
+      "Common probe displacement magnitude across coordinates.",
+      "Independent Rademacher signs; R independent directions averaged."
+    ],
+    "caveat": "This exact linear benchmark is not a measured Gemini gradient error, a convergence rate, or an impossibility result for stochastic optimization. Unequal clipped displacements change the variance.",
+    "unequal_displacement_variance_formula": "sum_i sum_{j!=i} g_j^2*a_j^2/a_i^2 when x_plus-x_minus=a*Delta and all a_i>0"
+  },
+  "boundary_counterexample": {
+    "objective": "f(m)=m^2",
+    "mask": 1.0,
+    "radius": 0.1,
+    "projected_plus": 1.0,
+    "projected_minus": 0.9,
+    "actual_displacement_estimate": 1.9,
+    "true_point_derivative": 2.0,
+    "interpretation": "An inward secant centered at 0.95, not an unbiased derivative at 1. The linear-case correctness test does not establish nonlinear boundary unbiasedness."
+  },
+  "sampling_squared_loss": {
+    "reference_score": 1.0,
+    "independent_label_samples_per_noise_image": 2,
+    "coefficient_noise_samples": 16,
+    "formula": "D_hat=Binomial(16,(1-p)^2)/16 under the equal-p assumptions below",
+    "loss_grid_step": 0.0625,
+    "assumptions": [
+      "Every plus/minus noise image has the same target-output probability p.",
+      "API response labels are independent conditional on each input.",
+      "These p values are illustrative, not estimates from the observed runs."
+    ],
+    "scenarios": [
+      {
+        "assumed_target_probability": 0.8,
+        "loss_estimate_zero_probability": 0.5204029246664724,
+        "paired_difference_zero_probability": 0.403390246232473,
+        "loss_variance": 0.002399999999999999,
+        "coordinate_sampling_noise_sd_interior_radius_0_1": 0.34641016151377535,
+        "coordinate_sampling_noise_sd_all_ones_radius_0_1": 0.6928203230275507
+      },
+      {
+        "assumed_target_probability": 0.9,
+        "loss_estimate_zero_probability": 0.8514577710948755,
+        "paired_difference_zero_probability": 0.7440255868398823,
+        "loss_variance": 0.0006187499999999997,
+        "coordinate_sampling_noise_sd_interior_radius_0_1": 0.17589059099337856,
+        "coordinate_sampling_noise_sd_all_ones_radius_0_1": 0.3517811819867571
+      },
+      {
+        "assumed_target_probability": 0.95,
+        "loss_estimate_zero_probability": 0.9607413206691348,
+        "paired_difference_zero_probability": 0.9245086599291501,
+        "loss_variance": 0.00015585937500000026,
+        "coordinate_sampling_noise_sd_interior_radius_0_1": 0.08827779307390965,
+        "coordinate_sampling_noise_sd_all_ones_radius_0_1": 0.1765555861478193
+      },
+      {
+        "assumed_target_probability": 0.99,
+        "loss_estimate_zero_probability": 0.9984011994401821,
+        "paired_difference_zero_probability": 0.996807507376156,
+        "loss_variance": 6.249375000000012e-06,
+        "coordinate_sampling_noise_sd_interior_radius_0_1": 0.01767678562408903,
+        "coordinate_sampling_noise_sd_all_ones_radius_0_1": 0.03535357124817806
+      }
+    ],
+    "asymmetric_example": {
+      "plus_probability": 0.99,
+      "minus_probability": 0.98,
+      "true_mean_loss_difference": -0.00030000000000000003,
+      "zero_observed_difference_probability": 0.9920407288277673
+    },
+    "one_loss_grid_jump_gradient_magnitude_radius_0_1": {
+      "interior": 0.3125,
+      "all_ones": 0.625
+    },
+    "mask_l1_gradient_per_nonzero_full_entry_weight_1": 3.114038584183673e-07,
+    "caveat": "Different noise-image probabilities require conditional Poisson-binomial calculations. Shared coefficient noise can correlate paired losses marginally; the equal-p independent-binomial calculations need not apply to real runs."
+  },
+  "observed_runs": [
+    {
+      "run": "runs/vertex-afghan-fiveway-20261006-224135",
+      "history_source": "runs/vertex-afghan-fiveway-20261006-224135/checkpoint-history.json",
+      "mask_resolution": "grid",
+      "completed_steps_at_snapshot": 50,
+      "planned_steps": 50,
+      "directions": 2,
+      "coefficient_noise_samples": 2,
+      "zero_difference_probe_pairs": 93,
+      "total_probe_pairs": 100,
+      "zero_difference_fraction": 0.93,
+      "last_recorded_estimated_fidelity_gradient_norm": 0.0,
+      "last_recorded_mean_mask_change": 0.0033207564245695343,
+      "final_result_available_at_snapshot": true,
+      "not_a_final_convergence_assessment": true,
+      "run_status_at_snapshot": "completed"
+    },
+    {
+      "run": "runs/vertex-afghan-imagenet-20261006-224644",
+      "history_source": "runs/vertex-afghan-imagenet-20261006-224644/checkpoint-history.json",
+      "mask_resolution": "grid",
+      "completed_steps_at_snapshot": 29,
+      "planned_steps": 50,
+      "directions": 2,
+      "coefficient_noise_samples": 2,
+      "zero_difference_probe_pairs": 53,
+      "total_probe_pairs": 58,
+      "zero_difference_fraction": 0.9137931034482759,
+      "last_recorded_estimated_fidelity_gradient_norm": 0.0,
+      "last_recorded_mean_mask_change": 0.007912656049956637,
+      "final_result_available_at_snapshot": false,
+      "not_a_final_convergence_assessment": true,
+      "run_status_at_snapshot": "interrupted"
+    },
+    {
+      "run": "runs/vertex-afghan-imagenet-full-pilot-20261006-231407",
+      "history_source": "runs/vertex-afghan-imagenet-full-pilot-20261006-231407/checkpoint-history.json",
+      "mask_resolution": "full",
+      "completed_steps_at_snapshot": 8,
+      "planned_steps": 8,
+      "directions": 1,
+      "coefficient_noise_samples": 16,
+      "zero_difference_probe_pairs": 6,
+      "total_probe_pairs": 8,
+      "zero_difference_fraction": 0.75,
+      "last_recorded_estimated_fidelity_gradient_norm": 0.0,
+      "last_recorded_mean_mask_change": 0.035820889550141136,
+      "final_result_available_at_snapshot": true,
+      "not_a_final_convergence_assessment": true,
+      "run_status_at_snapshot": "completed",
+      "result_source": "runs/vertex-afghan-imagenet-full-pilot-20261006-231407/result.json",
+      "held_out_evaluation": {
+        "target": "Afghan hound, Afghan",
+        "classes": 1000,
+        "evidence": "sampled target-label frequency, not calibrated correctness",
+        "original": {
+          "target_count": 128,
+          "samples": 128,
+          "target_frequency": 1.0
+        },
+        "retained": {
+          "target_count": 128,
+          "samples": 128,
+          "target_frequency": 1.0
+        },
+        "removed": {
+          "target_count": 128,
+          "samples": 128,
+          "target_frequency": 1.0
+        },
+        "removed_target_frequency_drop": 0.0,
+        "interpretation": "The retained image is sufficient for the sampled classification; no necessity drop was observed because the complementary image also retained the target frequency. This does not certify convergence or optimality."
+      },
+      "actual_provider_attempts": 1221,
+      "retry_count": 1,
+      "elapsed_seconds": 374.71671808397514
+    }
+  ],
+  "not_performed": [
+    "Controlled nose/fur counterfactual experiments.",
+    "Multiple-seed stability comparison.",
+    "Gemini true-gradient measurement.",
+    "Certification of local or global optimality."
+  ],
+  "source_commit": "c7d790a",
+  "snapshot_note": "Point-in-time audit of separately completed or interrupted runs; final run availability is not a convergence assessment."
+}

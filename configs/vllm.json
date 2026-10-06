@@ -1,0 +1,13 @@
+{
+  "model": {
+    "backend": "vllm", "model": "YOUR_SERVED_VLM_NAME", "base_url": "http://localhost:8000/v1",
+    "api_key_env": null, "supports_logprobs": true, "max_tokens": 1, "timeout": 60
+  },
+  "task": {"labels": ["finding_present", "finding_absent"], "question": "Does this image contain the specified finding?"},
+  "scores": ["probability", "log_margin", "agreement"],
+  "sampling": {"repeats": 8, "temperature": 1.0},
+  "transform": {"name": "shearlet", "scales": 2},
+  "image_size": 128,
+  "explainer": {"steps": 10, "grid_size": 4, "max_requests": 500, "seed": 42},
+  "max_total_requests": 500
+}
