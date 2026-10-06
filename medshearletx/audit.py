@@ -31,6 +31,8 @@ _METADATA_FIELDS = {
     "generation_option_names", "finish_reason", "usage", "response_id",
     "image_detail", "verbalizer_policy", "class_mass_is_lower_bound",
     "class_token_ids_verified", "logprob_scale", "numeric_padding_normalized",
+    "logprob_scope", "returned_class_count", "class_coverage_complete",
+    "probability_event", "output_token_count", "evaluated_prefix",
 }
 
 
@@ -137,6 +139,24 @@ def _safe_metadata(metadata: Mapping) -> dict:
                     if isinstance(name, str) and name.isidentifier()
                     and (number := _finite_number(raw)) is not None
                 }
+        elif key == "logprob_scope":
+            if isinstance(value, str) and value in {"complete", "reported"}:
+                result[key] = value
+        elif key == "returned_class_count":
+            if type(value) is int and 0 <= value <= 1000:
+                result[key] = value
+        elif key == "class_coverage_complete":
+            if type(value) is bool:
+                result[key] = value
+        elif key == "probability_event":
+            if isinstance(value, str) and value in {"output_token_event", "output_digit_sequence_event"}:
+                result[key] = value
+        elif key == "output_token_count":
+            if type(value) is int and 1 <= value <= 1000:
+                result[key] = value
+        elif key == "evaluated_prefix":
+            if isinstance(value, str) and len(value) <= 999 and all(char in "0123456789" for char in value):
+                result[key] = value
         elif key == "generation_option_names":
             if isinstance(value, (list, tuple)):
                 result[key] = [name for name in value if isinstance(name, str) and name.isidentifier()]

@@ -10,6 +10,10 @@ class CapabilityError(RuntimeError):
     """A backend cannot supply the evidence requested by a scorer."""
 
 
+class MissingTargetScoreError(CapabilityError):
+    """Reported native evidence omits the fixed target; its score is unknown."""
+
+
 class InvalidPredictionError(ValueError):
     """A model response does not satisfy the classification contract."""
 
@@ -80,8 +84,14 @@ class Prediction:
     """Provider evidence keyed by actual labels, rather than output codes.
 
     ``label_logprobs`` contains natural logs of mutually exclusive candidate
-    output probabilities before conditioning on the candidate set. Missing
-    evidence must be represented by ``None``, never by invented probabilities.
+    output event probabilities before conditioning on the candidate set.
+    Provider metadata identifies the verified token or digit-sequence event;
+    its probability is not a semantic class posterior or calibrated correctness.
+    A provider in reported-evidence scope may supply only the labels actually
+    reported; an absent label has unknown probability and must never be filled
+    with zero. Complete-distribution scorers require every candidate label.
+    Missing native evidence is represented by ``None``. ``sampled_label`` is
+    the actual generated class, not an argmax inferred from a partial mapping.
     """
 
     label_logprobs: dict[str, float] | None = None

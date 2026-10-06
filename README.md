@@ -15,9 +15,12 @@ The corrected paper profiles use a **dense 49×256×256 mask: 3,211,264 independ
 parameters shared across RGB**. They apply no grid expansion, pooling or mask
 smoothing. Earlier grouped-mask experiments remain explicit coarse baselines.
 Hybrid Adam estimates the API classification gradient with SPSA and computes
-local regularizer gradients through the synthesis adjoint. Gemini provides
-neither image gradients nor usable native logprobs on the tested deployment;
-classification uses sampled response frequencies. PNG clipping and 8-bit
+local regularizer gradients through the synthesis adjoint. The tested Gemini
+3.5 Flash-Lite deployment provides neither image gradients nor usable native
+logprobs; its classification uses sampled response frequencies. Gemini 2.5
+Flash/Lite native scores have now been probed with the same 1000-class task;
+see the [native score evidence and sampling-loss explanation](docs/native-logprobs.md).
+PNG clipping and 8-bit
 quantization also differ from the original floating-point white-box classifier.
 Restoring the full mask does not make the resulting experiment a 1:1 replication.
 
@@ -26,6 +29,7 @@ Restoring the full mask does not make the resulting experiment a 1:1 replication
 | `probability` | Candidate token logprobs normalized over configured labels | Default when complete logprobs are available |
 | `log_margin` | Target logprob minus strongest competing label logprob | Compare optimization behavior when probabilities saturate |
 | `agreement` | Target-label frequency across independent sampled responses | Alternative for deployments without logprobs |
+| `target_probability` | Raw probability of a verified fixed-target token/code path | Partial native evidence; never renormalizes top-k or fills missing targets |
 
 In a binary task probability and log margin use the same evidence on different
 scales. Their comparison is about optimization behavior. These scores measure
@@ -75,14 +79,18 @@ with `max_total_requests`; each agreement evaluation costs `repeats` calls.
 
 OpenAI/vLLM use Chat Completions; Gemini uses generateContent. The OpenAI and
 Gemini templates default to agreement until logprob support is confirmed. To
-probe native support, set `supports_logprobs: true` and add `probability` and
-`log_margin` to `scores`. This declares the requested capability, not a guarantee.
+probe complete native support, set `supports_logprobs: true` and add `probability`
+and `log_margin` to `scores`. For fixed-target partial evidence, also set
+`logprob_scope: "reported"`, select `target_probability`, and provide `--target`
+or a top-level config `target`. This declares the requested capability, not a guarantee.
 For recent vLLM, `class_token_ids` can map actual labels to the corresponding
 single-token A/B/... IDs, avoiding top-k omissions. IDs are deployment-specific.
 
 Model-specific reasoning controls belong in `generation_options`. Some models
 need a larger output budget or `token_budget_field: "max_completion_tokens"`;
-native scoring still requires a single visible class token. Fixed provider seeds
+complete native scoring still requires a single visible class token. Gemini's
+reported scope also supports validated numeric digit paths, retaining only the
+scores under an actually evaluated prefix. Fixed provider seeds
 are rejected for agreement because they can produce correlated repeated draws.
 
 ## Historical coarse paper-image experiment

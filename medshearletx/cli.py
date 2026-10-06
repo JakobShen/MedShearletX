@@ -13,6 +13,7 @@ from .data import ImageDataset
 from .audit import RequestBudgetExceeded
 from .backends import BackendRequestError
 from .runner import plan_run, run
+from .scoring import MODES
 
 
 def build_parser():
@@ -34,8 +35,8 @@ def build_parser():
         inputs.add_argument("--manifest", help="CSV with image_path, optional sample_id and label")
         command.add_argument("--output", required=True)
         command.add_argument("--limit", type=int, default=1)
-        command.add_argument("--scores", nargs="+", choices=["probability", "log_margin", "agreement"])
-        command.add_argument("--target", help="Fixed target label; defaults to original prediction")
+        command.add_argument("--scores", nargs="+", choices=MODES)
+        command.add_argument("--target", help="Fixed target label; required for target_probability unless set in config")
         command.add_argument("--dry-run", action="store_true", help="Validate configuration and print budget without API calls")
     return parser
 
@@ -97,7 +98,8 @@ def main(argv=None):
             kwargs = {"limit": args.limit, "scores": args.scores, "target": args.target,
                       "probe": args.command == "probe"}
             if args.dry_run:
-                print(json.dumps(plan_run(config, dataset, args.limit, args.scores, args.command == "probe"), indent=2))
+                print(json.dumps(plan_run(config, dataset, args.limit, args.scores,
+                                          args.command == "probe", target=args.target), indent=2))
                 return 0
             output = args.output
         results = run(config, dataset, output, progress=print, **kwargs)

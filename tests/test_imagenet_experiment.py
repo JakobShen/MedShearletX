@@ -20,6 +20,7 @@ from medshearletx.cli import main
 from medshearletx.explainer import to_image
 from medshearletx.imagenet_experiment import prepare_experiment, run_experiment
 from medshearletx.tasks import load_imagenet_task
+from medshearletx.types import Prediction
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -39,6 +40,24 @@ class UsageMockBackend(MockBackend):
         prediction = super().predict(image, task, require_logprobs=require_logprobs, temperature=temperature)
         return replace(prediction, metadata={**prediction.metadata,
                                             "usage": {"promptTokenCount": 3, "candidatesTokenCount": 1}})
+
+
+class PartialNativeBackend:
+    """An image-sensitive target score with only measured native evidence."""
+
+    def __init__(self):
+        self.calls = []
+
+    def predict(self, image, task, *, require_logprobs, temperature=1.0):
+        self.calls.append((task.prompt, require_logprobs))
+        target, other = task.labels[160], task.labels[162]
+        brightness = float(np.asarray(image).mean() / 255)
+        label = target if brightness > 0 else other
+        raw = {label: float(np.log(0.6 + 0.3 * brightness))} if require_logprobs else None
+        return Prediction(label_logprobs=raw, sampled_label=label,
+                          metadata={"native_logprobs": require_logprobs,
+                                    "logprob_scope": "reported", "returned_class_count": 1,
+                                    "class_coverage_complete": False})
 
 
 class ImageNetExperimentTests(unittest.TestCase):
@@ -140,6 +159,78 @@ class ImageNetExperimentTests(unittest.TestCase):
             if name.endswith("png"):
                 with Image.open(path) as figure:
                     self.assertGreater(min(figure.size), 500)
+
+    def test_native_target_optimization_keeps_full_task_and_separate_sampled_evaluation(self):
+        config = json.loads(json.dumps(self.config))
+        config["optimization_score"] = "target_probability"
+        config["optimization_sampling"] = {"repeats": 1, "workers": 1}
+        config["explainer"].update(steps=1, mask_resolution="full",
+                                    unbiased_sampling_distortion=False)
+        backend = PartialNativeBackend()
+        output = self.root / "native-run"
+        with patch("medshearletx.imagenet_experiment.create_backend", return_value=backend):
+            result = run_experiment(config, self.root, output, progress=lambda message: None)
+        task = load_imagenet_task(self.root / "labels.py")
+        self.assertEqual(result["optimization_score"], "target_probability")
+        self.assertEqual(result["requests"], 21)
+        self.assertEqual(result["request_bound"], 21)
+        self.assertEqual(sum(native for _, native in backend.calls), 7)
+        self.assertTrue(all(prompt == task.prompt for prompt, _ in backend.calls))
+        self.assertEqual(result["target_index"], 160)
+        for name in ("reference", "retained", "removed"):
+            self.assertEqual(result[name]["mode"], "agreement")
+            self.assertEqual(result[name]["requests"], 4)
+        native_reference = result["optimization_scores"]["reference"]
+        self.assertEqual(native_reference["mode"], "target_probability")
+        self.assertEqual(set(native_reference["probabilities"]), {result["target"]})
+        self.assertGreater(native_reference["target_score"], 0.6)
+        self.assertLess(native_reference["target_score"], 0.9)  # No partial top-k normalization.
+        self.assertEqual(result["optimization_diagnostics"]["model_score_evidence"], "native_target_logprob")
+        self.assertEqual(result["optimization_diagnostics"]["score_normalization"], "raw_unnormalized")
+        self.assertTrue((output / "optimization_scores.json").is_file())
+        self.assertTrue((output / "figures/f_n/step001.png").is_file())
+
+    def test_missing_final_native_target_is_unknown_and_preserves_completed_mask(self):
+        config = json.loads(json.dumps(self.config))
+        config["optimization_score"] = "target_probability"
+        config["optimization_sampling"] = {"repeats": 1}
+        config["explainer"].update(mask_init=1, unbiased_sampling_distortion=False)
+        backend = PartialNativeBackend()
+        output = self.root / "native-final-missing"
+        with patch("medshearletx.imagenet_experiment.create_backend", return_value=backend):
+            result = run_experiment(config, self.root, output, progress=lambda message: None)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(result["optimization_scores"]["removed"])
+        self.assertIsNone(result["optimization_diagnostics"]["probability_drop_removed"])
+        self.assertIn("unknown", result["optimization_diagnostics"]["final_score_status"]["removed"])
+        self.assertEqual(result["removed"]["target_score"], 0)  # Actual independent sampled evidence.
+        self.assertEqual(result["removed_target_frequency_drop"], 1)
+        self.assertEqual(result["requests"], 18)
+        self.assertTrue((output / "mask.npy").is_file())
+        self.assertTrue((output / "index.html").is_file())
+
+    def test_native_target_planning_rejects_sampling_loss_and_ignored_repeats(self):
+        config = json.loads(json.dumps(self.config))
+        config["optimization_score"] = "target_probability"
+        with self.assertRaisesRegex(ValueError, "unbiased_sampling_distortion"):
+            prepare_experiment(config, self.root)
+        config["explainer"]["unbiased_sampling_distortion"] = False
+        with self.assertRaisesRegex(ValueError, "repeats=1"):
+            prepare_experiment(config, self.root)
+
+    def test_native_experiment_rejects_known_unavailable_capability_before_selection(self):
+        config = json.loads(json.dumps(self.config))
+        config["optimization_score"] = "target_probability"
+        config["optimization_sampling"] = {"repeats": 1}
+        config["explainer"]["unbiased_sampling_distortion"] = False
+        backend = UsageMockBackend()
+        backend.supports_logprobs = False
+        output = self.root / "unsupported-native"
+        with patch("medshearletx.imagenet_experiment.create_backend", return_value=backend):
+            with self.assertRaisesRegex(ValueError, "declared native logprob support"):
+                run_experiment(config, self.root, output)
+        self.assertEqual(backend.calls, [])
+        self.assertFalse(output.exists())
 
     def test_planning_rejects_global_and_optimizer_caps_before_creating_backend(self):
         for change in ("global", "optimizer"):

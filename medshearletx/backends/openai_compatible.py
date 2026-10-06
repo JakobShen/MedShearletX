@@ -11,7 +11,7 @@ from ..types import CapabilityError, ClassificationTask, InvalidPredictionError,
 from .base import (
     Transport, aggregate_code_logprobs, api_key, http_json, parse_label, png_base64,
     positive_int, positive_number, request_json, safe_usage, single_item,
-    validate_api_key_env, validate_base_url, validate_options, validate_temperature,
+    validate_api_key_env, validate_base_url, validate_logprob_scope, validate_options, validate_temperature,
 )
 
 
@@ -40,6 +40,7 @@ class OpenAICompatibleBackend:
     def __init__(
         self, *, model: str, provider: str = "openai", base_url: str | None = None,
         api_key_env: str | None = "OPENAI_API_KEY", supports_logprobs: bool = False,
+        logprob_scope: str = "complete",
         timeout: float = 60.0, max_tokens: int = 1, token_budget_field: str = "max_tokens",
         generation_options: Mapping[str, Any] | None = None, image_detail: str = "auto",
         class_token_ids: Mapping[str, int] | None = None, transport: Transport | None = None,
@@ -69,6 +70,7 @@ class OpenAICompatibleBackend:
         ))
         self.api_key_env = validate_api_key_env(api_key_env)
         self.supports_logprobs = supports_logprobs
+        self.logprob_scope = validate_logprob_scope(logprob_scope)
         self.timeout = positive_number(timeout, "timeout")
         self.max_tokens = positive_int(max_tokens, "max_tokens")
         self.token_budget_field = token_budget_field
@@ -138,6 +140,7 @@ class OpenAICompatibleBackend:
             class_logprobs = aggregate_code_logprobs(
                 entries, task, logprob_key="logprob", token_id_key="token_id",
                 class_token_ids=self.class_token_ids,
+                require_all=self.logprob_scope == "complete",
             )
             if self.class_token_ids is not None:
                 class_token_ids_verified = all(
@@ -158,6 +161,9 @@ class OpenAICompatibleBackend:
                 class_mass_is_lower_bound=not class_token_ids_verified,
                 class_token_ids_verified=class_token_ids_verified,
                 logprob_scale="deployment_native",
+                logprob_scope=self.logprob_scope,
+                returned_class_count=len(class_logprobs),
+                class_coverage_complete=set(class_logprobs) == set(task.labels),
             )
         if isinstance(response.get("id"), str):
             metadata["response_id"] = response["id"]

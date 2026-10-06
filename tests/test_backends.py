@@ -14,7 +14,7 @@ from medshearletx.backends import (
     BackendRequestError, GeminiBackend, MockBackend, OpenAICompatibleBackend,
     create_backend, register_backend,
 )
-from medshearletx.backends.base import parse_label
+from medshearletx.backends.base import aggregate_code_logprobs, parse_label
 from medshearletx.types import Backend, CapabilityError, ClassificationTask, InvalidPredictionError
 
 
@@ -44,6 +44,45 @@ def gemini_response():
                             "chosenCandidates": [{"token": "B", "tokenId": 66, "logProbability": math.log(0.3)}],
                         }}],
     }
+
+
+def numeric_native_response(provider, *, chosen="160", chosen_probability=0.6, top=None):
+    """A 1000-way response whose API reports only a few output-code tokens."""
+    if top is None:
+        top = (("160", 0.6), ("161", 0.2), ("unrelated", 0.1))
+    gemini = provider in {"gemini", "vertex"}
+    probability_key = "logProbability" if gemini else "logprob"
+    id_key = "tokenId" if gemini else "token_id"
+
+    def entry(code, probability):
+        return {"token": code, probability_key: math.log(probability),
+                id_key: 1000 + int(code) if code.isdigit() else 2000}
+
+    selected = entry(chosen, chosen_probability)
+    candidates = [entry(code, probability) for code, probability in top]
+    if gemini:
+        return {"candidates": [{"content": {"parts": [{"text": chosen}]}, "finishReason": "STOP",
+                                 "logprobsResult": {"chosenCandidates": [selected],
+                                                    "topCandidates": [{"candidates": candidates}]}}]}
+    return {"choices": [{"message": {"content": chosen}, "finish_reason": "stop",
+                          "logprobs": {"content": [{**selected, "top_logprobs": candidates}]}}]}
+
+
+def gemini_digit_response(code="160"):
+    """Selected native values from the sanitized Vertex 2.5 Flash-Lite probe."""
+    steps = [
+        [("1", -0.00019093229, 236770), ("0", -9.783775, 236771), ("2", -9.867712, 236778)],
+        [("6", -0.0012516974, 236825), ("5", -7.397534, 236810), ("7", -8.467556, 236832)],
+        [("0", -0.000108950575, 236771), ("1", -9.292274, 236770),
+         ("9", -12.639614, 236819), ("<eos>", -17.757383, 1)],
+    ]
+    top = [{"candidates": [{"token": token, "logProbability": value, "tokenId": token_id}
+                            for token, value, token_id in step]} for step in steps]
+    chosen = [copy.deepcopy(next(entry for entry in step["candidates"] if entry["token"] == digit))
+              for digit, step in zip(code, top)]
+    return {"candidates": [{"content": {"parts": [{"text": code}]}, "finishReason": "STOP",
+                             "avgLogprobs": 1234.0,
+                             "logprobsResult": {"chosenCandidates": chosen, "topCandidates": top}}]}
 
 
 class FakeTransport:
@@ -95,6 +134,181 @@ class BackendsTest(unittest.TestCase):
         self.assertIsNone(result.label_logprobs)
         self.assertEqual(result.sampled_label, "normal")
         self.assertNotIn("logprobs", transport.calls[0]["payload"])
+
+    def test_reported_scope_preserves_observed_1000_way_native_probabilities(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        for provider in ("gemini", "vertex", "openai", "vllm"):
+            with self.subTest(provider=provider):
+                transport = FakeTransport(numeric_native_response(provider))
+                backend = create_backend({"backend": provider, "model": "offline", "api_key_env": None,
+                                          "supports_logprobs": True, "logprob_scope": "reported"},
+                                         transport=transport)
+                result = backend.predict(self.image, task, require_logprobs=True)
+                self.assertEqual(result.sampled_label, "label-160")
+                self.assertEqual(set(result.label_logprobs), {"label-160", "label-161"})
+                self.assertAlmostEqual(result.label_logprobs["label-160"], math.log(0.6))
+                self.assertAlmostEqual(result.label_logprobs["label-161"], math.log(0.2))
+                self.assertAlmostEqual(sum(map(math.exp, result.label_logprobs.values())), 0.8)
+                self.assertEqual(result.metadata["logprob_scope"], "reported")
+                self.assertEqual(result.metadata["returned_class_count"], 2)
+                self.assertFalse(result.metadata["class_coverage_complete"])
+                self.assertIn("999: label-999", str(transport.calls[0]["payload"]))
+
+    def test_reported_scope_never_invents_a_missing_target_probability(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        for provider in ("gemini", "vertex", "openai", "vllm"):
+            with self.subTest(provider=provider):
+                response = numeric_native_response(provider, chosen="161", chosen_probability=0.3,
+                                                   top=(("999", 0.1), ("unrelated", 0.1)))
+                backend = create_backend({"backend": provider, "model": "offline", "api_key_env": None,
+                                          "supports_logprobs": True, "logprob_scope": "reported"},
+                                         transport=FakeTransport(response))
+                result = backend.predict(self.image, task, require_logprobs=True)
+                self.assertEqual(set(result.label_logprobs), {"label-161", "label-999"})
+                self.assertNotIn("label-160", result.label_logprobs)
+                self.assertAlmostEqual(result.label_logprobs["label-161"], math.log(0.3))
+
+    def test_logprob_scope_validation_and_complete_default(self):
+        for provider in ("gemini", "vertex", "openai", "vllm"):
+            backend = create_backend({"backend": provider, "model": "offline", "api_key_env": None})
+            self.assertEqual(backend.logprob_scope, "complete")
+            for scope in (None, True, 1, [], {}, "partial", "Reported"):
+                with self.subTest(provider=provider, scope=scope), self.assertRaises(ValueError):
+                    create_backend({"backend": provider, "model": "offline", "logprob_scope": scope})
+
+    def test_reported_scope_retains_strict_single_token_and_native_score_validation(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        for provider in ("gemini", "vertex", "openai", "vllm"):
+            gemini = provider in {"gemini", "vertex"}
+            for problem in ("missing_chosen_score", "missing_top_score", "extra_step", "conflicting_id", "sentinel"):
+                with self.subTest(provider=provider, problem=problem):
+                    response = numeric_native_response(provider)
+                    if gemini:
+                        native = response["candidates"][0]["logprobsResult"]
+                        chosen = native["chosenCandidates"][0]
+                        top = native["topCandidates"][0]["candidates"]
+                        chosen_list = native["chosenCandidates"]
+                        probability_key, id_key = "logProbability", "tokenId"
+                    else:
+                        native = response["choices"][0]["logprobs"]
+                        chosen = native["content"][0]
+                        top = chosen["top_logprobs"]
+                        chosen_list = native["content"]
+                        probability_key, id_key = "logprob", "token_id"
+                    if problem == "missing_chosen_score":
+                        chosen.pop(probability_key)
+                    elif problem == "missing_top_score":
+                        top[1].pop(probability_key)
+                    elif problem == "extra_step":
+                        chosen_list.append({"token": "\n", probability_key: -0.1})
+                    elif problem == "conflicting_id":
+                        top[1][id_key] = chosen[id_key]
+                    else:
+                        top[1][probability_key] = -9999.0
+                    backend = create_backend({"backend": provider, "model": "offline", "api_key_env": None,
+                                              "supports_logprobs": True, "logprob_scope": "reported"},
+                                             transport=FakeTransport(response))
+                    with self.assertRaises(InvalidPredictionError):
+                        backend.predict(self.image, task, require_logprobs=True)
+
+    def test_partial_aggregation_ignores_unknown_tokens_without_missing_class_floors(self):
+        entries = [{"token": "A", "tokenId": 65, "logProbability": math.log(0.3)},
+                   {"token": "A", "tokenId": 65, "logProbability": math.log(0.3)},
+                   {"token": "unrelated", "tokenId": 123}]
+        result = aggregate_code_logprobs(entries, self.task, logprob_key="logProbability",
+                                        token_id_key="tokenId", require_all=False)
+        self.assertEqual(result, {"normal": math.log(0.3)})
+        with self.assertRaises(InvalidPredictionError):
+            aggregate_code_logprobs(entries, self.task, logprob_key="logProbability", token_id_key="tokenId")
+        with self.assertRaises(ValueError):
+            aggregate_code_logprobs(entries, self.task, logprob_key="logProbability", require_all="false")
+
+    def test_gemini_reported_digit_path_uses_joint_likelihood_for_same_prefix_only(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        backend = GeminiBackend(model="offline", api_key_env=None, supports_logprobs=True,
+                                logprob_scope="reported", transport=FakeTransport(gemini_digit_response()))
+        result = backend.predict(self.image, task, require_logprobs=True)
+        prefix_logprob = -0.00019093229 - 0.0012516974
+        self.assertEqual(set(result.label_logprobs), {"label-160", "label-161", "label-169"})
+        self.assertAlmostEqual(result.label_logprobs["label-160"], prefix_logprob - 0.000108950575)
+        self.assertAlmostEqual(result.label_logprobs["label-161"], prefix_logprob - 9.292274)
+        self.assertAlmostEqual(math.exp(result.label_logprobs["label-160"]),
+                               math.exp(-0.00019093229) * math.exp(-0.0012516974) * math.exp(-0.000108950575))
+        # Earlier alternatives were evaluated under another prefix; their later
+        # conditional probabilities cannot be borrowed from the chosen path.
+        self.assertNotIn("label-60", result.label_logprobs)
+        self.assertNotIn("label-260", result.label_logprobs)
+        self.assertNotIn("label-150", result.label_logprobs)
+        self.assertNotIn("label-170", result.label_logprobs)
+        self.assertEqual(result.metadata["probability_event"], "output_digit_sequence_event")
+        self.assertEqual(result.metadata["verbalizer_policy"], "reported_digit_sequence_codes")
+        self.assertEqual(result.metadata["output_token_count"], 3)
+        self.assertEqual(result.metadata["evaluated_prefix"], "16")
+        self.assertTrue(result.metadata["class_mass_is_lower_bound"])
+        self.assertEqual(result.metadata["returned_class_count"], 3)
+        self.assertFalse(result.metadata["class_coverage_complete"])
+
+    def test_gemini_reported_digit_path_can_score_target_different_from_chosen_last_digit(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        backend = GeminiBackend(model="offline", api_key_env=None, supports_logprobs=True,
+                                logprob_scope="reported", transport=FakeTransport(gemini_digit_response("161")))
+        result = backend.predict(self.image, task, require_logprobs=True)
+        self.assertEqual(result.sampled_label, "label-161")
+        self.assertAlmostEqual(result.label_logprobs["label-160"],
+                               -0.00019093229 - 0.0012516974 - 0.000108950575)
+        self.assertAlmostEqual(result.label_logprobs["label-161"],
+                               -0.00019093229 - 0.0012516974 - 9.292274)
+
+    def test_gemini_digit_path_is_reported_only_and_rejects_arbitrary_multitoken_outputs(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        backend = GeminiBackend(model="offline", api_key_env=None, supports_logprobs=True,
+                                transport=FakeTransport(gemini_digit_response()))
+        with self.assertRaisesRegex(InvalidPredictionError, "exactly one"):
+            backend.predict(self.image, task, require_logprobs=True)
+        for problem in ("merged_digit", "eos", "word", "non_ascii", "visible_mismatch", "extra_step",
+                        "missing_step", "malformed_step", "malformed_candidate", "missing_chosen_score",
+                        "missing_top_score", "invalid_id", "id_text_conflict", "score_conflict", "sentinel"):
+            with self.subTest(problem=problem):
+                response = gemini_digit_response()
+                native = response["candidates"][0]["logprobsResult"]
+                chosen, top = native["chosenCandidates"], native["topCandidates"]
+                if problem in {"merged_digit", "eos", "word", "non_ascii"}:
+                    chosen[0]["token"] = {"merged_digit": "16", "eos": "<eos>",
+                                           "word": "Afghan", "non_ascii": "１"}[problem]
+                elif problem == "visible_mismatch":
+                    response["candidates"][0]["content"]["parts"][0]["text"] = "161"
+                elif problem == "extra_step":
+                    chosen.append({"token": "0", "tokenId": 236771, "logProbability": -0.1})
+                elif problem == "missing_step":
+                    top.pop()
+                elif problem == "malformed_step":
+                    top[0]["candidates"] = None
+                elif problem == "malformed_candidate":
+                    top[0]["candidates"].append(None)
+                elif problem == "missing_chosen_score":
+                    chosen[0].pop("logProbability")
+                elif problem == "missing_top_score":
+                    top[0]["candidates"][1].pop("logProbability")
+                elif problem == "invalid_id":
+                    chosen[0]["tokenId"] = True
+                elif problem == "id_text_conflict":
+                    top[0]["candidates"][1]["tokenId"] = chosen[0]["tokenId"]
+                elif problem == "score_conflict":
+                    chosen[0]["logProbability"] = -0.1
+                else:
+                    chosen[0]["logProbability"] = -9999.0
+                backend = GeminiBackend(model="offline", api_key_env=None, supports_logprobs=True,
+                                        logprob_scope="reported", transport=FakeTransport(response))
+                with self.assertRaises(InvalidPredictionError):
+                    backend.predict(self.image, task, require_logprobs=True)
+        response = gemini_response()
+        native = response["candidates"][0]["logprobsResult"]
+        native["chosenCandidates"].append({"token": "\n", "tokenId": 10, "logProbability": -0.1})
+        native["topCandidates"].append({"candidates": []})
+        backend = GeminiBackend(model="offline", api_key_env=None, supports_logprobs=True,
+                                logprob_scope="reported", transport=FakeTransport(response))
+        with self.assertRaisesRegex(InvalidPredictionError, "uniform numeric"):
+            backend.predict(self.image, self.task, require_logprobs=True)
 
     def test_numeric_padding_parser_is_opt_in_and_class_preserving(self):
         task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
@@ -279,6 +493,8 @@ class BackendsTest(unittest.TestCase):
         self.assertEqual(config["logprobs"], 20)
         self.assertEqual(result.sampled_label, "abnormal")
         self.assertAlmostEqual(result.label_logprobs["normal"], math.log(0.6))
+        self.assertEqual(result.metadata["probability_event"], "output_token_event")
+        self.assertEqual(result.metadata["output_token_count"], 1)
         self.assertNotIn("offline-secret", repr(result))
 
     def test_gemini_chosen_token_outside_top_candidates_is_retained(self):

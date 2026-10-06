@@ -24,13 +24,14 @@ class VertexBackend(GeminiBackend):
     def __init__(
         self, *, model: str, base_url: str = "https://aiplatform.googleapis.com/v1",
         api_key_env: str | None = "VERTEX_API_KEY", supports_logprobs: bool = False,
+        logprob_scope: str = "complete",
         timeout: float = 60.0, max_output_tokens: int = 128,
         generation_options: Mapping[str, Any] | None = None, transport: Transport | None = None,
     ) -> None:
         self._raw_transport = transport or http_json
         super().__init__(
             model=model, base_url=base_url, api_key_env=api_key_env,
-            supports_logprobs=supports_logprobs, timeout=timeout,
+            supports_logprobs=supports_logprobs, logprob_scope=logprob_scope, timeout=timeout,
             max_output_tokens=max_output_tokens, generation_options=generation_options,
             transport=self._vertex_transport,
         )

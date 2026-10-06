@@ -13,6 +13,7 @@ import unittest
 from PIL import Image
 
 from medshearletx.audit import RecordedBackend, RequestBudgetExceeded
+from medshearletx.backends.gemini import GeminiBackend
 from medshearletx.backends.base import png_base64
 from medshearletx.types import ClassificationTask, Prediction
 
@@ -106,6 +107,79 @@ class RecordedBackendTests(unittest.TestCase):
                                  "numeric_padding_normalized": True})
         self.assertNotIn("SECRET", self.path.read_text())
         self.assertNotIn("https://", self.path.read_text())
+
+    def test_reported_native_evidence_retains_partial_coverage_without_filling_labels(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        metadata = {"logprob_scope": "reported", "returned_class_count": 1,
+                    "class_coverage_complete": False, "headers": {"Authorization": "SECRET"},
+                    "unapproved_coverage_detail": "SECRET"}
+        prediction = Prediction(sampled_label="label-160", label_logprobs={"label-160": -0.2},
+                                metadata=metadata)
+        backend = RecordedBackend(AuditStubBackend(prediction=prediction), self.path, max_requests=1)
+        backend.predict(self.image, task, require_logprobs=True)
+        saved = self._entries()[0]["prediction"]
+        self.assertEqual(saved["label_logprobs"], {"label-160": -0.2})
+        self.assertNotIn("label-161", saved["label_logprobs"])
+        self.assertEqual(saved["metadata"], {"logprob_scope": "reported", "returned_class_count": 1,
+                                             "class_coverage_complete": False})
+        self.assertNotIn("SECRET", self.path.read_text())
+
+    def test_partial_native_metadata_fields_are_type_checked_before_recording(self):
+        invalid = [
+            {"logprob_scope": "SECRET", "returned_class_count": True, "class_coverage_complete": "false"},
+            {"logprob_scope": {"api_key": "SECRET"}, "returned_class_count": -1, "class_coverage_complete": None},
+            {"logprob_scope": ["reported"], "returned_class_count": 1001, "class_coverage_complete": 0},
+            {"logprob_scope": None, "returned_class_count": 1.5, "class_coverage_complete": []},
+        ]
+        backend = RecordedBackend(AuditStubBackend(), self.path, max_requests=len(invalid))
+        for metadata in invalid:
+            backend.backend.prediction = Prediction(sampled_label="normal", metadata=metadata)
+            backend.predict(self.image, self.task, require_logprobs=False)
+        self.assertTrue(all(not row["prediction"]["metadata"] for row in self._entries()))
+        self.assertNotIn("SECRET", self.path.read_text())
+
+    def test_gemini_digit_event_scope_and_actual_prefix_are_preserved_in_request_log(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        chosen = [{"token": digit, "tokenId": 10 + int(digit), "logProbability": -0.1}
+                  for digit in "160"]
+        top = [{"candidates": [entry]} for entry in chosen]
+        top[-1]["candidates"] = [chosen[-1], {"token": "1", "tokenId": 11, "logProbability": -3.0}]
+        response = {"candidates": [{"content": {"parts": [{"text": "160"}]}, "finishReason": "STOP",
+                                     "logprobsResult": {"chosenCandidates": chosen, "topCandidates": top}}]}
+        gemini = GeminiBackend(model="offline", api_key_env=None, supports_logprobs=True,
+                               logprob_scope="reported", transport=lambda *args, **kwargs: response)
+        backend = RecordedBackend(gemini, self.path, max_requests=1)
+        backend.predict(self.image, task, require_logprobs=True)
+        saved = self._entries()[0]["prediction"]
+        metadata = saved["metadata"]
+        self.assertEqual(metadata["probability_event"], "output_digit_sequence_event")
+        self.assertEqual(metadata["verbalizer_policy"], "reported_digit_sequence_codes")
+        self.assertEqual(metadata["evaluated_prefix"], "16")
+        self.assertEqual(metadata["output_token_count"], 3)
+        self.assertEqual(metadata["returned_class_count"], 2)
+        self.assertFalse(metadata["class_coverage_complete"])
+        self.assertAlmostEqual(saved["label_logprobs"]["label-160"], -0.3)
+        self.assertAlmostEqual(saved["label_logprobs"]["label-161"], -3.2)
+
+    def test_native_event_metadata_filters_invalid_event_count_and_prefix(self):
+        invalid = [
+            {"probability_event": "SECRET", "output_token_count": True, "evaluated_prefix": "secret"},
+            {"probability_event": [], "output_token_count": 0, "evaluated_prefix": "１６"},
+            {"probability_event": None, "output_token_count": 1001, "evaluated_prefix": "0" * 1000},
+            {"probability_event": "sequence", "output_token_count": 1.5, "evaluated_prefix": ["16"]},
+        ]
+        backend = RecordedBackend(AuditStubBackend(), self.path, max_requests=len(invalid) + 1)
+        for metadata in invalid:
+            backend.backend.prediction = Prediction(sampled_label="normal", metadata=metadata)
+            backend.predict(self.image, self.task, require_logprobs=False)
+        backend.backend.prediction = Prediction(sampled_label="normal", metadata={
+            "probability_event": "output_token_event", "output_token_count": 1, "evaluated_prefix": ""})
+        backend.predict(self.image, self.task, require_logprobs=True)
+        rows = self._entries()
+        self.assertTrue(all(not row["prediction"]["metadata"] for row in rows[:-1]))
+        self.assertEqual(rows[-1]["prediction"]["metadata"], {
+            "probability_event": "output_token_event", "output_token_count": 1, "evaluated_prefix": ""})
+        self.assertNotIn("SECRET", self.path.read_text())
 
     def test_concurrent_quota_reservations_never_exceed_hard_limit(self):
         stub = AuditStubBackend()

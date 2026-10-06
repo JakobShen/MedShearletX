@@ -11,7 +11,7 @@ from PIL import Image, ImageOps
 from .backends import BackendRequestError, create_backend
 from .data import ImageDataset
 from .explainer import BlackBoxShearletX, ExplainerConfig, to_image
-from .scoring import Scorer
+from .scoring import MODES, Scorer
 from .tasks import load_task
 from .transforms import create_transform
 from .types import CapabilityError, InvalidPredictionError
@@ -22,22 +22,36 @@ def write_json(path, value):
 
 
 def describe_result(result, target):
+    if result is None:
+        return None
     return {"mode": result.mode, "target_score": result.score(target),
             "scores": result.scores, "probabilities": result.probabilities,
             "log_probabilities": result.log_probabilities, "sample_counts": result.sample_counts,
+            "observed_label": result.observed_label, "predicted_label": result.predicted_label,
             "diagnostics": result.diagnostics, "requests": result.requests}
 
 
-def prepare(config, scores=None):
+def prepare(config, scores=None, target=None):
     task = load_task(config["task"], root=config.get("root", "."))
-    modes = scores or config.get("scores", ["probability", "log_margin", "agreement"])
-    if not modes or len(set(modes)) != len(modes) or any(m not in {"probability", "log_margin", "agreement"} for m in modes):
-        raise ValueError("scores must contain distinct probability, log_margin or agreement modes")
+    modes = scores if scores is not None else config.get("scores", ["probability", "log_margin", "agreement"])
+    if not modes or len(set(modes)) != len(modes) or any(m not in MODES for m in modes):
+        raise ValueError("scores must contain distinct probability, log_margin, agreement or target_probability modes")
+    target = target if target is not None else config.get("target")
+    if target is not None and (not isinstance(target, str) or target not in task.labels):
+        raise ValueError("target must be one of the task labels")
+    if "target_probability" in modes and target is None:
+        raise ValueError("target_probability requires an explicit --target or top-level config target")
     if "api_key" in config.get("model", {}):
         raise ValueError("Use api_key_env, not plaintext api_key in config")
     backend = create_backend(config["model"])
     settings = config.get("sampling", {})
-    scorers = {mode: Scorer(backend, task, mode=mode, **settings) for mode in modes}
+    if "target" in settings:
+        raise ValueError("Use top-level config target or --target instead of sampling.target")
+    scorers = {
+        mode: Scorer(backend, task, mode=mode,
+                     target=target if mode == "target_probability" else None, **settings)
+        for mode in modes
+    }
     optimizer = ExplainerConfig(**config.get("explainer", {}))
     if type(config.get("step_visuals", True)) is not bool:
         raise ValueError("step_visuals must be a boolean")
@@ -118,8 +132,8 @@ def preprocess(image, config):
     return to_image(pixels.astype(np.float64)), metadata
 
 
-def plan_run(config, dataset, limit=1, scores=None, probe=False):
-    _, scorers, optimizer = prepare(config, scores)
+def plan_run(config, dataset, limit=1, scores=None, probe=False, target=None):
+    _, scorers, optimizer = prepare(config, scores, target)
     if type(limit) is not int or limit < 1:
         raise ValueError("limit must be positive")
     count = min(limit, len(dataset))
@@ -139,22 +153,25 @@ def plan_run(config, dataset, limit=1, scores=None, probe=False):
         raise ValueError(f"Planned bound {total} exceeds max_total_requests={maximum}")
     return {"images": count, "scores": list(scorers), "requests_per_image_bound": bounds,
             "total_requests_bound": total, "max_total_requests": maximum,
+            "target": target if target is not None else config.get("target"),
             "transform": config.get("transform", {"name": "shearlet", "scales": 2}),
             "probe": probe}
 
 
 def run(config, dataset: ImageDataset, output, *, limit=1, scores=None,
         target=None, probe=False, progress=None):
-    plan = plan_run(config, dataset, limit, scores, probe)
-    task, scorers, optimizer = prepare(config, scores)
-    if target is not None and target not in task.labels:
-        raise ValueError("target must be one of the task labels")
+    plan = plan_run(config, dataset, limit, scores, probe, target)
+    task, scorers, optimizer = prepare(config, scores, target)
+    target = plan["target"]
     output = Path(output)
     if output.exists() and any(output.iterdir()):
         raise ValueError("Output directory must be empty; choose a new run directory")
     output.mkdir(parents=True, exist_ok=True)
     # Config contains env variable names only, never resolved credentials.
-    write_json(output / "config.json", config)
+    effective_config = {**config, "scores": list(scorers)}
+    if target is not None:
+        effective_config["target"] = target
+    write_json(output / "config.json", effective_config)
     write_json(output / "plan.json", plan)
     transform = None if probe else create_transform(plan["transform"])
     results = []
@@ -183,10 +200,10 @@ def run(config, dataset: ImageDataset, output, *, limit=1, scores=None,
             if progress:
                 progress(f"Image {index + 1}/{plan['images']}: {mode}")
             try:
-                reused = mode != "agreement" and native_reference is not None
+                reused = mode in {"probability", "log_margin"} and native_reference is not None
                 reference = native_reference.with_mode(mode) if reused else scorer.evaluate(image)
                 reference_requests = 0 if reused else reference.requests
-                if mode != "agreement":
+                if mode in {"probability", "log_margin"}:
                     native_reference = reference
                 if fixed_target is None:
                     fixed_target = max(reference.probabilities, key=reference.probabilities.get)

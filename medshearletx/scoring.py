@@ -8,10 +8,12 @@ from threading import Lock
 import numpy as np
 from PIL import Image
 
-from .types import Backend, CapabilityError, ClassificationTask, InvalidPredictionError
+from .types import (
+    Backend, CapabilityError, ClassificationTask, InvalidPredictionError, MissingTargetScoreError,
+)
 
 
-MODES = ("probability", "log_margin", "agreement")
+MODES = ("probability", "log_margin", "agreement", "target_probability")
 
 
 @dataclass(frozen=True)
@@ -20,8 +22,11 @@ class ScoreResult:
 
     Candidate probabilities and sampling frequency measure model behavior;
     neither is a calibrated probability that a medical label is correct.
-    Native evidence can be viewed as either probability or log margin without
-    querying the model again.
+    Complete native evidence can be viewed as either probability or log margin
+    without querying the model again. Fixed-target evidence keeps one raw
+    output event probability and cannot be converted into a complete
+    candidate distribution. ``observed_label`` records the provider's actual
+    sampled label, which can differ from the fixed target.
     """
 
     mode: str
@@ -30,10 +35,15 @@ class ScoreResult:
     sample_counts: dict[str, int] = field(default_factory=dict)
     requests: int = 1
     diagnostics: dict = field(default_factory=dict)
+    observed_label: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in MODES:
             raise ValueError(f"unknown score mode: {self.mode!r}")
+        if self.observed_label is not None and (
+            not isinstance(self.observed_label, str) or not self.observed_label.strip()
+        ):
+            raise ValueError("observed_label must be a nonempty label string or None")
         object.__setattr__(self, "probabilities", dict(self.probabilities))
         if self.log_probabilities is not None:
             object.__setattr__(self, "log_probabilities", dict(self.log_probabilities))
@@ -46,7 +56,9 @@ class ScoreResult:
         return {label: self.score(label) for label in self.probabilities}
 
     @property
-    def predicted_label(self) -> str:
+    def predicted_label(self) -> str | None:
+        if self.mode == "target_probability":
+            return self.observed_label
         return max(self.probabilities, key=self.probabilities.get)
 
     def score(self, target: str) -> float:
@@ -65,6 +77,18 @@ class ScoreResult:
         """Reuse native evidence across probability and log-margin objectives."""
         if mode not in MODES:
             raise ValueError(f"unknown score mode: {mode!r}")
+        if mode == self.mode:
+            return replace(self, mode=mode)
+        if self.mode == "target_probability":
+            raise CapabilityError(
+                "fixed-target raw evidence cannot substitute for complete candidate "
+                "probabilities, log margin, or sampled agreement"
+            )
+        if mode == "target_probability":
+            raise CapabilityError(
+                "target_probability requires a fixed target and its raw native log "
+                "probability; normalized probabilities or sample frequency cannot substitute"
+            )
         if mode == "agreement" and self.mode != "agreement":
             raise CapabilityError("agreement requires repeated sampled predictions")
         if self.mode == "agreement" and mode != "agreement":
@@ -96,9 +120,15 @@ class Scorer:
         repeats: int = 16,
         temperature: float = 1.0,
         workers: int = 1,
+        target: str | None = None,
     ) -> None:
         if mode not in MODES:
             raise ValueError(f"unknown score mode: {mode!r}")
+        if mode == "target_probability":
+            if not isinstance(target, str) or target not in task.labels:
+                raise ValueError("target_probability requires a fixed target from task.labels")
+        elif target is not None:
+            raise ValueError("target is only supported for mode='target_probability'")
         if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 1:
             raise ValueError("repeats must be a positive integer")
         if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 32:
@@ -122,6 +152,7 @@ class Scorer:
         self.repeats = repeats
         self.temperature = float(temperature)
         self.workers = workers
+        self.target = target
         self.requests = 0
         self._requests_lock = Lock()
 
@@ -139,6 +170,8 @@ class Scorer:
         raw = prediction.label_logprobs
         if raw is None:
             raise CapabilityError("backend did not return native label log probabilities")
+        if self.mode == "target_probability":
+            return self._target_probability(prediction, raw)
         if set(raw) != set(self.task.labels):
             missing = sorted(set(self.task.labels) - set(raw))
             extra = sorted(set(raw) - set(self.task.labels), key=str)
@@ -182,6 +215,70 @@ class Scorer:
                 "calibrated_correctness": False,
                 "backend": dict(prediction.metadata),
             },
+            observed_label=prediction.sampled_label,
+        )
+
+    def _target_probability(self, prediction, raw: dict[str, float]) -> ScoreResult:
+        """Keep reported native mass without conditioning on a partial top-k set."""
+        extra = sorted(set(raw) - set(self.task.labels), key=str)
+        if extra:
+            raise InvalidPredictionError(
+                f"reported native evidence contains labels outside task.labels: {extra}"
+            )
+        values = []
+        for label, value in raw.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not np.isfinite(value)
+                or value > 0
+            ):
+                raise InvalidPredictionError(
+                    f"log probability for {label!r} must be finite and <= 0"
+                )
+            values.append(float(value))
+        if values:
+            values = np.asarray(values, dtype=float)
+            maximum = float(values.max())
+            log_mass = maximum + float(np.log(np.exp(values - maximum).sum()))
+            if log_mass > 1e-5:
+                raise InvalidPredictionError(
+                    "native probabilities for mutually exclusive labels sum to more than 1"
+                )
+        observed_label = prediction.sampled_label
+        if observed_label is not None and (
+            not isinstance(observed_label, str) or observed_label not in self.task.labels
+        ):
+            raise InvalidPredictionError(
+                f"native prediction returned invalid sampled label {observed_label!r}"
+            )
+        if self.target not in raw:
+            raise MissingTargetScoreError(
+                f"native evidence does not report the fixed target label {self.target!r}; "
+                "its missing probability cannot be replaced with zero"
+            )
+        raw_logprob = float(raw[self.target])
+        return ScoreResult(
+            mode="target_probability",
+            probabilities={self.target: float(np.exp(raw_logprob))},
+            log_probabilities={self.target: raw_logprob},
+            requests=1,
+            diagnostics={
+                "scope": "fixed_target",
+                "normalization": "raw_unnormalized",
+                "normalized": False,
+                "probability_event": prediction.metadata.get("probability_event", "output_token_event"),
+                "target": self.target,
+                "raw_logprob": raw_logprob,
+                "reported_class_mass": float(np.exp(log_mass)),
+                "log_reported_class_mass": log_mass,
+                "reported_class_count": len(raw),
+                "temperature": self.temperature,
+                "evidence": "native_target_logprob",
+                "calibrated_correctness": False,
+                "backend": dict(prediction.metadata),
+            },
+            observed_label=observed_label,
         )
 
     def _sample(self, image: Image.Image) -> ScoreResult:

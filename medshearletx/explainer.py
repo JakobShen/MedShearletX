@@ -10,6 +10,7 @@ from PIL import Image
 
 from .scoring import Scorer, ScoreResult
 from .transforms import ImageTransform
+from .types import MissingTargetScoreError
 
 
 def to_image(array: np.ndarray) -> Image.Image:
@@ -117,8 +118,8 @@ class Explanation:
     mask: np.ndarray
     target: str
     reference: ScoreResult
-    retained: ScoreResult
-    removed: ScoreResult
+    retained: ScoreResult | None
+    removed: ScoreResult | None
     history: list[dict] = field(default_factory=list)
     diagnostics: dict = field(default_factory=dict)
 
@@ -390,8 +391,22 @@ class BlackBoxShearletX:
         normalizer = float(displayed_kept.max())
         if cfg.normalize_final and normalizer > 0:
             displayed_kept = displayed_kept / normalizer
-        retained_result = evaluate(displayed_kept)
-        removed_result = evaluate(removed)
+        final_status = {}
+
+        def final_evaluation(name, array):
+            try:
+                result = evaluate(array)
+            except MissingTargetScoreError:
+                # Missing top-k evidence is unknown, never probability zero.
+                # Optimization probes remain strict: only final reporting can
+                # preserve a completed mask alongside an unavailable score.
+                final_status[name] = "unknown; target absent from reported native evidence"
+                return None
+            final_status[name] = "available"
+            return result
+
+        retained_result = final_evaluation("retained", displayed_kept)
+        removed_result = final_evaluation("removed", removed)
         before = reference.probabilities[target]
         return Explanation(
             image=to_image(displayed_kept), removed_image=to_image(removed), mask=best_mask,
@@ -400,7 +415,13 @@ class BlackBoxShearletX:
             diagnostics={"transform": self.transform.name,
                          "optimization": ("full_" if cfg.mask_resolution == "full" else "grouped_") + cfg.optimizer,
                          "model_gradient": "black_box_spsa_estimate",
-                         "model_score_evidence": "sampled_label_frequency" if self.scorer.mode == "agreement" else "native_candidate_logprobs",
+                         "model_score_evidence": ("sampled_label_frequency" if self.scorer.mode == "agreement" else
+                                                  "native_target_logprob" if self.scorer.mode == "target_probability" else
+                                                  "native_candidate_logprobs"),
+                         "score_mode": self.scorer.mode,
+                         "score_normalization": reference.diagnostics.get("normalization"),
+                         "score_probability_event": reference.diagnostics.get("probability_event"),
+                         "final_score_status": final_status,
                          "finite_difference_denominator": "actual_clipped_probe_displacement" if cfg.optimizer == "hybrid_adam" else "symmetric_nominal_radius",
                          "requests": requests, "request_bound": bound,
                          "mask_parameters": int(best_mask.size), "coefficient_shape": list(coeffs.shape),
@@ -410,9 +431,9 @@ class BlackBoxShearletX:
                          "fidelity_loss": cfg.fidelity_loss,
                          "perturbation_directions": cfg.directions, "selected_step": best_step,
                          "mask_energy": best["mask_energy"], "spatial_energy": best["spatial_energy"],
-                         "probability_drop_removed": before - removed_result.probabilities[target],
-                         "retained_probability_ratio": retained_result.probabilities[target] / before if before > 0 else None,
-                         "retained_score_distortion": (retained_result.score(target) - reference_score) ** 2,
+                         "probability_drop_removed": before - removed_result.probabilities[target] if removed_result is not None else None,
+                         "retained_probability_ratio": retained_result.probabilities[target] / before if retained_result is not None and before > 0 else None,
+                         "retained_score_distortion": (retained_result.score(target) - reference_score) ** 2 if retained_result is not None else None,
                          "evaluation": "clean_kept_and_removed_images; " + (
                              "resampled_common_noise_optimization" if cfg.resample_noise else "fixed_noise_optimization"),
                          "fidelity_reference": cfg.fidelity_reference,

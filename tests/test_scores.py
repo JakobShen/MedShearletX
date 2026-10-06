@@ -6,7 +6,9 @@ import unittest
 from PIL import Image
 
 from medshearletx.scoring import Scorer
-from medshearletx.types import CapabilityError, ClassificationTask, InvalidPredictionError, Prediction
+from medshearletx.types import (
+    CapabilityError, ClassificationTask, InvalidPredictionError, MissingTargetScoreError, Prediction,
+)
 
 
 class StubBackend:
@@ -97,6 +99,119 @@ class ScoringTests(unittest.TestCase):
         self.assertAlmostEqual(result.score("normal"), 1)
         self.assertAlmostEqual(sum(result.probabilities.values()), 1)
         self.assertTrue(math.isfinite(result.diagnostics["log_class_mass"]))
+
+    def test_fixed_target_scores_keep_partial_1000_class_native_probability(self):
+        task = ClassificationTask(tuple(f"class_{index}" for index in range(1000)), "Which class?")
+        target, observed = task.labels[:2]
+        backend = StubBackend([
+            Prediction(label_logprobs={target: math.log(probability), observed: math.log(0.05)},
+                       sampled_label=observed, metadata={"logprob_scope": "reported"})
+            for probability in (0.9, 0.8)
+        ])
+        scorer = Scorer(backend, task, mode="target_probability", target=target)
+        reference = scorer.evaluate(self.image)
+        candidate = scorer.evaluate(self.image)
+        self.assertAlmostEqual(reference.score(target), 0.9)
+        self.assertAlmostEqual(candidate.score(target), 0.8)
+        self.assertAlmostEqual((reference.score(target) - candidate.score(target)) ** 2, 0.01)
+        self.assertEqual(reference.observed_label, observed)
+        self.assertEqual(reference.predicted_label, observed)
+        self.assertEqual(candidate.predicted_label, observed)
+        self.assertEqual(set(reference.probabilities), {target})
+        self.assertEqual(set(reference.log_probabilities), {target})
+        self.assertAlmostEqual(reference.log_probabilities[target], math.log(0.9))
+        self.assertEqual(reference.scores, reference.probabilities)
+        self.assertNotAlmostEqual(sum(reference.probabilities.values()), 1.0)
+        self.assertAlmostEqual(reference.diagnostics["reported_class_mass"], 0.95)
+        self.assertEqual(reference.diagnostics["scope"], "fixed_target")
+        self.assertEqual(reference.diagnostics["normalization"], "raw_unnormalized")
+        self.assertFalse(reference.diagnostics["normalized"])
+        self.assertEqual(reference.diagnostics["probability_event"], "output_token_event")
+        self.assertEqual(reference.diagnostics["target"], target)
+        self.assertAlmostEqual(reference.diagnostics["raw_logprob"], math.log(0.9))
+        self.assertFalse(reference.diagnostics["calibrated_correctness"])
+        with self.assertRaises(ValueError):
+            reference.score(observed)
+        self.assertEqual(backend.calls, [(True, 1.0)] * 2)
+        self.assertEqual(scorer.requests, 2)
+
+    def test_fixed_target_requires_an_explicit_known_target(self):
+        for target in (None, "unknown", 1, True, []):
+            with self.subTest(target=target):
+                backend = StubBackend([])
+                with self.assertRaisesRegex(ValueError, "fixed target from task.labels"):
+                    Scorer(backend, self.task, mode="target_probability", target=target)
+                self.assertEqual(backend.calls, [])
+        for mode in ("probability", "log_margin", "agreement"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "target is only supported"):
+                Scorer(StubBackend([]), self.task, mode=mode, target="normal")
+
+    def test_fixed_target_preserves_provider_output_event_semantics(self):
+        backend = StubBackend([Prediction(
+            label_logprobs={"normal": math.log(0.8)}, sampled_label="normal",
+            metadata={"probability_event": "output_digit_sequence_event"},
+        )])
+        result = Scorer(backend, self.task, mode="target_probability", target="normal").evaluate(self.image)
+        self.assertEqual(result.diagnostics["probability_event"], "output_digit_sequence_event")
+        self.assertAlmostEqual(result.score("normal"), 0.8)
+
+    def test_fixed_target_absent_from_reported_evidence_fails_without_zero_fill(self):
+        for evidence in ({}, {"abnormal": math.log(0.9)}):
+            with self.subTest(evidence=evidence):
+                backend = StubBackend([Prediction(label_logprobs=evidence, sampled_label="abnormal")])
+                scorer = Scorer(backend, self.task, mode="target_probability", target="normal")
+                with self.assertRaisesRegex(MissingTargetScoreError, "does not report the fixed target.*normal"):
+                    scorer.evaluate(self.image)
+                self.assertEqual(scorer.requests, 1)
+        backend = StubBackend([Prediction(sampled_label="normal", metadata={"confidence": 0.99})])
+        with self.assertRaisesRegex(CapabilityError, "native label log probabilities"):
+            Scorer(backend, self.task, mode="target_probability", target="normal").evaluate(self.image)
+
+    def test_fixed_target_validates_all_reported_native_evidence(self):
+        cases = [
+            {"normal": math.log(0.8), "unknown": math.log(0.1)},
+            {"normal": math.log(0.8), "abnormal": float("nan")},
+            {"normal": math.log(0.8), "abnormal": float("-inf")},
+            {"normal": math.log(0.8), "abnormal": 0.1},
+            {"normal": math.log(0.8), "abnormal": "-2"},
+            {"normal": math.log(0.8), "abnormal": True},
+            {"normal": math.log(0.8), "abnormal": math.log(0.3)},
+            {"normal": math.log(0.6), "abnormal": math.log(0.6)},
+        ]
+        for evidence in cases:
+            with self.subTest(evidence=evidence), self.assertRaises(InvalidPredictionError):
+                backend = StubBackend([Prediction(label_logprobs=evidence, sampled_label="normal")])
+                Scorer(backend, self.task, mode="target_probability", target="normal").evaluate(self.image)
+
+    def test_fixed_target_does_not_invent_an_observed_label(self):
+        backend = StubBackend([Prediction(label_logprobs={"normal": math.log(0.9)})])
+        result = Scorer(backend, self.task, mode="target_probability", target="normal").evaluate(self.image)
+        self.assertIsNone(result.observed_label)
+        self.assertIsNone(result.predicted_label)
+        for invalid in ("unknown", "A", []):
+            for evidence in ({"normal": math.log(0.9)}, {"abnormal": math.log(0.9)}):
+                with self.subTest(invalid=invalid, evidence=evidence), self.assertRaisesRegex(
+                    InvalidPredictionError, "sampled label"
+                ):
+                    backend = StubBackend([Prediction(label_logprobs=evidence, sampled_label=invalid)])
+                    Scorer(backend, self.task, mode="target_probability", target="normal").evaluate(self.image)
+
+    def test_fixed_target_evidence_cannot_change_to_other_score_scopes(self):
+        backend = StubBackend([Prediction(label_logprobs={"normal": math.log(0.9)},
+                                          sampled_label="normal")])
+        result = Scorer(backend, self.task, mode="target_probability", target="normal").evaluate(self.image)
+        self.assertEqual(result.with_mode("target_probability"), result)
+        for mode in ("probability", "log_margin", "agreement"):
+            with self.subTest(mode=mode), self.assertRaises(CapabilityError):
+                result.with_mode(mode)
+        backend = StubBackend([Prediction(label_logprobs={"normal": math.log(0.3), "abnormal": math.log(0.1)})])
+        complete = Scorer(backend, self.task).evaluate(self.image)
+        with self.assertRaises(CapabilityError):
+            complete.with_mode("target_probability")
+        backend = StubBackend([Prediction(sampled_label="normal")])
+        agreement = Scorer(backend, self.task, mode="agreement", repeats=1).evaluate(self.image)
+        with self.assertRaises(CapabilityError):
+            agreement.with_mode("target_probability")
 
     def test_incomplete_or_invalid_native_evidence_fails_explicitly(self):
         cases = [

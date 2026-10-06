@@ -1,0 +1,402 @@
+{
+  "date": "2026-10-06",
+  "endpoint": "Vertex Express v1 generateContent",
+  "task_classes": 1000,
+  "prompt_sha256": "8d2528b1e5b582d9f1deee938a736cc664165133144d5f9917a33da814c5a3ba",
+  "input_sha256": "4c7877970c3eb86889d36a574758c73e7fd5237e37abda89b4652ba4c8d1292b",
+  "probe_source_commit": "a5a8ed15da9fa5499c81edb39346b1b2639a946f",
+  "capability_probes": [
+    {
+      "model": "gemini-3.5-flash-lite",
+      "case": "top20",
+      "generation_config": {
+        "candidateCount": 1,
+        "maxOutputTokens": 128,
+        "thinkingConfig": {
+          "thinkingLevel": "MINIMAL"
+        },
+        "responseLogprobs": true,
+        "logprobs": 20
+      },
+      "http_status": 400,
+      "native_requested": true,
+      "logprobs_returned": false,
+      "error": {
+        "code": 400,
+        "message": "Unable to submit request because Logprobs is not supported for this model. Learn more: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/gemini",
+        "status": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "case": "chosen_only",
+      "generation_config": {
+        "candidateCount": 1,
+        "maxOutputTokens": 128,
+        "thinkingConfig": {
+          "thinkingLevel": "MINIMAL"
+        },
+        "responseLogprobs": true
+      },
+      "http_status": 400,
+      "native_requested": true,
+      "logprobs_returned": false,
+      "error": {
+        "code": 400,
+        "message": "Unable to submit request because Logprobs is not supported for this model. Learn more: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/gemini",
+        "status": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "case": "control",
+      "generation_config": {
+        "candidateCount": 1,
+        "maxOutputTokens": 128,
+        "thinkingConfig": {
+          "thinkingLevel": "MINIMAL"
+        }
+      },
+      "http_status": 200,
+      "native_requested": false,
+      "logprobs_returned": false,
+      "visible_text": "160"
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "native_requested": true,
+      "generation_config": {
+        "candidateCount": 1,
+        "maxOutputTokens": 128,
+        "temperature": 0,
+        "thinkingConfig": {
+          "thinkingLevel": "MINIMAL"
+        },
+        "responseLogprobs": true,
+        "logprobs": 20
+      },
+      "http_status": 400,
+      "error": {
+        "status": "INVALID_ARGUMENT",
+        "message": "Unable to submit request because Logprobs is not supported for this model. Learn more: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/gemini"
+      },
+      "logprobs_returned": false
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "native_requested": false,
+      "generation_config": {
+        "candidateCount": 1,
+        "maxOutputTokens": 128,
+        "temperature": 0,
+        "thinkingConfig": {
+          "thinkingLevel": "MINIMAL"
+        }
+      },
+      "http_status": 200,
+      "visible_text": "160",
+      "logprobs_returned": false
+    },
+    {
+      "model": "gemini-2.5-flash-lite",
+      "native_requested": true,
+      "generation_config": {
+        "candidateCount": 1,
+        "maxOutputTokens": 128,
+        "temperature": 0,
+        "thinkingConfig": {
+          "thinkingBudget": 0
+        },
+        "responseLogprobs": true,
+        "logprobs": 20
+      },
+      "http_status": 200,
+      "visible_text": "160",
+      "logprobs_returned": true,
+      "chosen_tokens": [
+        {
+          "token": "1",
+          "logProbability": -0.00019093229,
+          "tokenId": 236770
+        },
+        {
+          "token": "6",
+          "logProbability": -0.0012516974,
+          "tokenId": 236825
+        },
+        {
+          "token": "0",
+          "logProbability": -0.000108950575,
+          "tokenId": 236771
+        }
+      ],
+      "native_decoding_steps": 3,
+      "top_k_per_step": [
+        20,
+        20,
+        20
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "native_requested": true,
+      "generation_config": {
+        "candidateCount": 1,
+        "maxOutputTokens": 128,
+        "temperature": 0,
+        "thinkingConfig": {
+          "thinkingBudget": 0
+        },
+        "responseLogprobs": true,
+        "logprobs": 20
+      },
+      "http_status": 200,
+      "visible_text": "160",
+      "logprobs_returned": true,
+      "chosen_tokens": [
+        {
+          "token": "1",
+          "logProbability": -8.034191e-05,
+          "tokenId": 236770
+        },
+        {
+          "token": "6",
+          "logProbability": -8.2248516e-05,
+          "tokenId": 236825
+        },
+        {
+          "token": "0",
+          "logProbability": -7.783962e-05,
+          "tokenId": 236771
+        }
+      ],
+      "native_decoding_steps": 3,
+      "top_k_per_step": [
+        20,
+        20,
+        20
+      ]
+    }
+  ],
+  "documentation": [
+    "https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/inference",
+    "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions"
+  ],
+  "vertex25_retirement_date": "2026-10-20",
+  "scope": "tested API key and Express endpoint; not a claim about every deployment",
+  "target_score_probe": {
+    "model": "gemini-2.5-flash-lite",
+    "task_classes": 1000,
+    "fixed_target": "Afghan hound, Afghan",
+    "temperature": 1,
+    "source_images": "docs/assets/gemini35-afghan-full-pilot-20261006",
+    "role": "score_sensitivity_probe_not_native_mask_optimization",
+    "images": [
+      {
+        "image": "input",
+        "status": "available",
+        "score": {
+          "mode": "target_probability",
+          "target_score": 0.9984475987333697,
+          "scores": {
+            "Afghan hound, Afghan": 0.9984475987333697
+          },
+          "probabilities": {
+            "Afghan hound, Afghan": 0.9984475987333697
+          },
+          "log_probabilities": {
+            "Afghan hound, Afghan": -0.00155360749
+          },
+          "sample_counts": {},
+          "observed_label": "Afghan hound, Afghan",
+          "predicted_label": "Afghan hound, Afghan",
+          "diagnostics": {
+            "scope": "fixed_target",
+            "normalization": "raw_unnormalized",
+            "normalized": false,
+            "probability_event": "output_digit_sequence_event",
+            "target": "Afghan hound, Afghan",
+            "raw_logprob": -0.00155360749,
+            "reported_class_mass": 0.9985577746761392,
+            "log_reported_class_mass": -0.001443266331835695,
+            "reported_class_count": 10,
+            "temperature": 1.0,
+            "evidence": "native_target_logprob",
+            "calibrated_correctness": false,
+            "backend": {
+              "backend": "vertex",
+              "model": "gemini-2.5-flash-lite",
+              "temperature": 1.0,
+              "native_logprobs": true,
+              "token_budget": 128,
+              "numeric_padding_normalized": false,
+              "generation_option_names": [
+                "thinkingConfig"
+              ],
+              "finish_reason": "STOP",
+              "usage": {
+                "promptTokenCount": 10319,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 10322
+              },
+              "verbalizer_policy": "reported_digit_sequence_codes",
+              "class_mass_is_lower_bound": true,
+              "logprob_scale": "deployment_native",
+              "logprob_scope": "reported",
+              "returned_class_count": 10,
+              "class_coverage_complete": false,
+              "probability_event": "output_digit_sequence_event",
+              "output_token_count": 3,
+              "evaluated_prefix": "16",
+              "response_id": "MmvFau7cGK-u8uMP-YWSmAU",
+              "requested_temperature": 1.0,
+              "effective_temperature": 1.0,
+              "temperature_control": "requested",
+              "native_logprobs_deprecated": false
+            }
+          },
+          "requests": 1
+        },
+        "squared_loss_against_one": 2.4099496926352182e-06
+      },
+      {
+        "image": "retained",
+        "status": "available",
+        "score": {
+          "mode": "target_probability",
+          "target_score": 0.9982219816946946,
+          "scores": {
+            "Afghan hound, Afghan": 0.9982219816946946
+          },
+          "probabilities": {
+            "Afghan hound, Afghan": 0.9982219816946946
+          },
+          "log_probabilities": {
+            "Afghan hound, Afghan": -0.001779600856
+          },
+          "sample_counts": {},
+          "observed_label": "Afghan hound, Afghan",
+          "predicted_label": "Afghan hound, Afghan",
+          "diagnostics": {
+            "scope": "fixed_target",
+            "normalization": "raw_unnormalized",
+            "normalized": false,
+            "probability_event": "output_digit_sequence_event",
+            "target": "Afghan hound, Afghan",
+            "raw_logprob": -0.001779600856,
+            "reported_class_mass": 0.9982921066629143,
+            "log_reported_class_mass": -0.001709353449625591,
+            "reported_class_count": 10,
+            "temperature": 1.0,
+            "evidence": "native_target_logprob",
+            "calibrated_correctness": false,
+            "backend": {
+              "backend": "vertex",
+              "model": "gemini-2.5-flash-lite",
+              "temperature": 1.0,
+              "native_logprobs": true,
+              "token_budget": 128,
+              "numeric_padding_normalized": false,
+              "generation_option_names": [
+                "thinkingConfig"
+              ],
+              "finish_reason": "STOP",
+              "usage": {
+                "promptTokenCount": 10319,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 10322
+              },
+              "verbalizer_policy": "reported_digit_sequence_codes",
+              "class_mass_is_lower_bound": true,
+              "logprob_scale": "deployment_native",
+              "logprob_scope": "reported",
+              "returned_class_count": 10,
+              "class_coverage_complete": false,
+              "probability_event": "output_digit_sequence_event",
+              "output_token_count": 3,
+              "evaluated_prefix": "16",
+              "response_id": "M2vFasGzI6mo9fgPn7TysQ8",
+              "requested_temperature": 1.0,
+              "effective_temperature": 1.0,
+              "temperature_control": "requested",
+              "native_logprobs_deprecated": false
+            }
+          },
+          "requests": 1
+        },
+        "squared_loss_against_one": 3.1613490940012287e-06
+      },
+      {
+        "image": "removed",
+        "status": "available",
+        "score": {
+          "mode": "target_probability",
+          "target_score": 0.9955252888562737,
+          "scores": {
+            "Afghan hound, Afghan": 0.9955252888562737
+          },
+          "probabilities": {
+            "Afghan hound, Afghan": 0.9955252888562737
+          },
+          "log_probabilities": {
+            "Afghan hound, Afghan": -0.00448475263
+          },
+          "sample_counts": {},
+          "observed_label": "Afghan hound, Afghan",
+          "predicted_label": "Afghan hound, Afghan",
+          "diagnostics": {
+            "scope": "fixed_target",
+            "normalization": "raw_unnormalized",
+            "normalized": false,
+            "probability_event": "output_digit_sequence_event",
+            "target": "Afghan hound, Afghan",
+            "raw_logprob": -0.00448475263,
+            "reported_class_mass": 0.9956990421061594,
+            "log_reported_class_mass": -0.0043102336191331875,
+            "reported_class_count": 10,
+            "temperature": 1.0,
+            "evidence": "native_target_logprob",
+            "calibrated_correctness": false,
+            "backend": {
+              "backend": "vertex",
+              "model": "gemini-2.5-flash-lite",
+              "temperature": 1.0,
+              "native_logprobs": true,
+              "token_budget": 128,
+              "numeric_padding_normalized": false,
+              "generation_option_names": [
+                "thinkingConfig"
+              ],
+              "finish_reason": "STOP",
+              "usage": {
+                "promptTokenCount": 10319,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 10322
+              },
+              "verbalizer_policy": "reported_digit_sequence_codes",
+              "class_mass_is_lower_bound": true,
+              "logprob_scale": "deployment_native",
+              "logprob_scope": "reported",
+              "returned_class_count": 10,
+              "class_coverage_complete": false,
+              "probability_event": "output_digit_sequence_event",
+              "output_token_count": 3,
+              "evaluated_prefix": "16",
+              "response_id": "NGvFavDbKcmOmLAPhuKz8QM",
+              "requested_temperature": 1.0,
+              "effective_temperature": 1.0,
+              "temperature_control": "requested",
+              "native_logprobs_deprecated": false
+            }
+          },
+          "requests": 1
+        },
+        "squared_loss_against_one": 2.0023039819788588e-05
+      }
+    ],
+    "physical_requests": 3,
+    "implementation_state": "uncommitted native-score extension on probe_source_commit",
+    "calibrated_correctness": false
+  },
+  "physical_requests": 10
+}

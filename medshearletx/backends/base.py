@@ -115,6 +115,13 @@ def validate_temperature(value: float) -> float:
     return float(value)
 
 
+def validate_logprob_scope(value: str) -> str:
+    """Choose complete class evidence or only the probabilities actually reported."""
+    if not isinstance(value, str) or value not in {"complete", "reported"}:
+        raise ValueError("logprob_scope must be complete or reported.")
+    return value
+
+
 def positive_number(value: float, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be positive and finite.")
@@ -177,23 +184,43 @@ def aggregate_code_logprobs(
     entries: Sequence[Mapping[str, Any]], task: ClassificationTask, *,
     logprob_key: str, token_id_key: str | None = None,
     class_token_ids: Mapping[str, int] | None = None,
+    require_all: bool = True,
 ) -> dict[str, float]:
     """Sum reported single-token code variants, never invent missing probabilities.
 
     Top-k APIs expose a subset of vocabulary tokens. Whitespace variants present
     in that subset are summed; unseen variants are not assumed to have zero mass.
     In explicit-ID mode the declared ID per class defines the verbalizer set.
+    With ``require_all=False``, absent classes remain absent from the result;
+    reported probabilities retain their original scale without normalization.
     """
+    if not isinstance(require_all, bool):
+        raise ValueError("require_all must be a boolean.")
     values: dict[str, dict[Any, float]] = {label: {} for label in task.labels}
     expected = {code: label for code, label in zip(task.codes, task.labels)}
     selected_ids = {token_id: label for label, token_id in (class_token_ids or {}).items()}
     entries = list(entries)
     if any(not isinstance(entry, Mapping) for entry in entries):
         raise InvalidPredictionError("Malformed native token logprob entry.")
+    identities = {}
     for entry in entries:
         token_id = entry.get(token_id_key) if token_id_key else None
         if token_id is not None and (isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0):
             raise InvalidPredictionError("Malformed native token ID.")
+        token = entry.get("token")
+        if not isinstance(token, str) or token.strip() not in expected:
+            continue
+        value = entry.get(logprob_key)
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                not math.isfinite(value) or value > 0 or value <= -9999.0):
+            raise InvalidPredictionError("A class token has an invalid or unmeasured native logprob.")
+        identity = ("id", token_id) if token_id is not None else ("text", token)
+        label = expected[token.strip()]
+        if identity in identities:
+            previous_label, previous_value = identities[identity]
+            if previous_label != label or not math.isclose(previous_value, value, abs_tol=1e-6):
+                raise InvalidPredictionError("The provider returned conflicting evidence for the same token.")
+        identities[identity] = label, float(value)
     if class_token_ids is not None and any(entry.get(token_id_key) is not None for entry in entries):
         # The provider can include a sampled whitespace variant outside our
         # declared ID set. It remains a valid classification, but its mass must
@@ -209,23 +236,20 @@ def aggregate_code_logprobs(
             continue
         label = expected[token.strip()]
         value = entry.get(logprob_key)
-        if (isinstance(value, bool) or not isinstance(value, (int, float)) or
-                not math.isfinite(value) or value > 0 or value <= -9999.0):
-            raise InvalidPredictionError("A class token has an invalid or unmeasured native logprob.")
         token_id = entry.get(token_id_key) if token_id_key else None
         identity = ("id", token_id) if token_id is not None else ("text", token)
-        if identity in values[label] and not math.isclose(values[label][identity], value, abs_tol=1e-6):
-            raise InvalidPredictionError("The provider returned conflicting logprobs for the same token.")
         values[label][identity] = float(value)
     missing = [label for label, variants in values.items() if not variants]
-    if missing:
+    if require_all and missing:
         raise InvalidPredictionError(
             "Native logprobs omit one or more class codes; choose another deployment or use sampling agreement."
         )
-    if class_token_ids is not None and any(len(variants) != 1 for variants in values.values()):
+    if class_token_ids is not None and any(len(variants) != 1 for variants in values.values() if variants):
         raise InvalidPredictionError("Explicit class_token_ids requires one reported token per class.")
     result = {}
     for label, variants in values.items():
+        if not variants:
+            continue
         maximum = max(variants.values())
         result[label] = maximum + math.log(math.fsum(math.exp(value - maximum) for value in variants.values()))
     if math.fsum(math.exp(value) for value in result.values()) > 1.0 + 1e-5:
