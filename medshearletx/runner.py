@@ -21,7 +21,8 @@ def write_json(path, value):
 
 def describe_result(result, target):
     return {"mode": result.mode, "target_score": result.score(target),
-            "probabilities": result.probabilities, "sample_counts": result.sample_counts,
+            "scores": result.scores, "probabilities": result.probabilities,
+            "log_probabilities": result.log_probabilities, "sample_counts": result.sample_counts,
             "diagnostics": result.diagnostics, "requests": result.requests}
 
 

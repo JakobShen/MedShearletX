@@ -33,6 +33,8 @@ class RunnerTests(unittest.TestCase):
         rows = run(self.config, self.dataset, output)
         self.assertEqual([row["status"] for row in rows], ["ok"] * 3)
         self.assertTrue(rows[1]["reference_reused"])
+        self.assertEqual(set(rows[0]["reference"]["log_probabilities"]), {"bright", "dark"})
+        self.assertIsNone(rows[2]["reference"]["log_probabilities"])
         self.assertEqual(len({row["target"] for row in rows}), 1)
         for mode in ("probability", "log_margin", "agreement"):
             for name in ("retained.png", "removed.png", "mask.npy", "history.json"):
