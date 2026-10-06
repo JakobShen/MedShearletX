@@ -133,7 +133,7 @@ its experiments use 300 steps. These are separate objectives and protocols.
 | Config | Purpose |
 | --- | --- |
 | `configs/vertex-afghan-imagenet.json` | Dense 150-step author-code profile; planned bound 14886 attempts including retries, hard cap 15000 |
-| `configs/vertex-afghan-imagenet-pilot.json` | Same dense structure, eight steps; planned bound 1254; verifies the implementation, not convergence |
+| `configs/vertex-afghan-imagenet-pilot.json` | Same dense structure, eight steps; planned bound 1254; checks geometry and input/output paths, not optimizer parity or convergence |
 | `configs/vertex-afghan-paper-objective.json` | Dense 300-step linear `1-p` profile; author-code L1 mean normalization declared, mixed-coefficient clipping disabled |
 | `configs/vertex-afghan-imagenet-coarse.json`, `configs/vertex-afghan-fiveway-coarse.json` | Earlier grouped-mask baselines; separate from the dense profiles |
 
@@ -143,7 +143,37 @@ floating-point input for the shearlet transform. Four scales yield 49 bands.
 Uniform noise uses grayscale-band means and sample standard deviations
 (`ddof=1`), shared across RGB; masks start at one. The explicit remaining
 adaptations are the black-box classification gradient, sampled frequency score,
-and PNG input required by Gemini. Dense pilot results are **pending**.
+and PNG input required by Gemini.
+
+The [completed eight-step dense pilot](docs/results/gemini35-afghan-full-pilot-20261006.json)
+made 1221 physical attempts, including one retry, in 374.7 seconds. It selected
+Afghan hound (ID 160) in 32/32 responses. Separate final evaluations returned
+128/128 Afghan hound responses on each of the original, retained and removed
+images (95% Wilson interval 97.09–100% each). The retained frequency ratio is
+100%, and the removed-target frequency drop is zero: necessary evidence was
+**not isolated**. The final mask mean is 0.5152; this is not an information
+percentage. The 150-step profile has **not** been run.
+
+![Eight-step dense Gemini pilot](docs/assets/gemini35-afghan-full-pilot-20261006/comparison.png)
+
+Six of eight classification-gradient probe pairs had zero difference; the two
+nonzero estimates had norms 1342.18 and 681.62, against a local regularizer
+gradient norm of 0.00509. The last mean mask change was 0.03582. These noisy
+directional estimates and eight steps establish neither stationarity nor a
+minimum. The original Adam procedure also offers no global convergence
+guarantee. Different visible emphasis from VGG19's hair/texture example does
+not by itself identify a bug or establish Gemini's reliance on the nose.
+
+An [independent transform check](docs/results/author-transform-parity.json)
+translates the author's FFT formulas into NumPy/SciPy and tests the actual
+Afghan input, 49 bands, random dense mask, RGB/grayscale paths, mixed-coefficient
+clipping and final clip/max display. Float64 elementwise errors are below
+7×10⁻¹⁶; float32 FFT/filter casts differ by less than 5×10⁻⁷ in displayed
+floats. Actual core obfuscation, final and removed PNGs match the independent
+float64 construction. These checks cover geometry and image paths, not VGG
+optimizer parity, Gemini feature attribution or convergence.
+The [gradient and convergence audit](docs/gradient-and-convergence.md) explains
+score saturation, directional-estimate variance and the limits of these checks.
 
 Every API query includes the complete candidate set. The target selected on the
 original image stays fixed; selection does not turn a 1000-way query into a

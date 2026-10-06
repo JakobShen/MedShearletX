@@ -1,0 +1,373 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "run_role": "eight_step_structure_validation_not_convergence",
+  "local_run": "runs/vertex-afghan-imagenet-full-pilot-20261006-231407",
+  "code_commit": "c7d790ad15180bba55a30277f9e003548e603a1e",
+  "model": {
+    "backend": "vertex",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "VERTEX_API_KEY",
+    "max_output_tokens": 128,
+    "generation_options": {
+      "thinkingConfig": {
+        "thinkingLevel": "MINIMAL"
+      }
+    }
+  },
+  "classes": 1000,
+  "target": "Afghan hound, Afghan",
+  "target_index": 160,
+  "scores": {
+    "selection": {
+      "target_count": 32,
+      "samples": 32,
+      "target_frequency": 1.0,
+      "wilson_95": [
+        0.8928208017449293,
+        1.0
+      ],
+      "nonzero_counts": {
+        "Afghan hound, Afghan": 32
+      }
+    },
+    "reference": {
+      "target_count": 128,
+      "samples": 128,
+      "target_frequency": 1.0,
+      "wilson_95": [
+        0.9708630437264916,
+        1.0
+      ],
+      "nonzero_counts": {
+        "Afghan hound, Afghan": 128
+      }
+    },
+    "retained": {
+      "target_count": 128,
+      "samples": 128,
+      "target_frequency": 1.0,
+      "wilson_95": [
+        0.9708630437264916,
+        1.0
+      ],
+      "nonzero_counts": {
+        "Afghan hound, Afghan": 128
+      }
+    },
+    "removed": {
+      "target_count": 128,
+      "samples": 128,
+      "target_frequency": 1.0,
+      "wilson_95": [
+        0.9708630437264916,
+        1.0
+      ],
+      "nonzero_counts": {
+        "Afghan hound, Afghan": 128
+      }
+    }
+  },
+  "evidence": "sampled_label_frequency; not native class probability or calibrated correctness",
+  "request_count": 1221,
+  "retry_count": 1,
+  "failed_attempts": 1,
+  "request_bound": 1254,
+  "elapsed_seconds": 374.71671808397514,
+  "retained_frequency_ratio": 1.0,
+  "removed_target_frequency_drop": 0.0,
+  "necessary_evidence_isolated": false,
+  "preprocessing": {
+    "mode": "stretch",
+    "size": 256,
+    "resampling": "tensor_bilinear",
+    "align_corners": false,
+    "antialias": false,
+    "tensor_dtype": "float32"
+  },
+  "optimization_config": {
+    "steps": 8,
+    "learning_rate": 0.1,
+    "perturbation_size": 0.1,
+    "mask_init": 1.0,
+    "distortion_weight": 1.0,
+    "mask_weight": 1.0,
+    "spatial_weight": 2.0,
+    "noise": "uniform",
+    "noise_samples": 16,
+    "noise_workers": 4,
+    "seed": 42,
+    "fidelity_reference": "one",
+    "noise_channels": "shared_gray",
+    "resample_noise": true,
+    "spatial_domain": "gray_clipped",
+    "normalize_final": true,
+    "unbiased_sampling_distortion": true,
+    "optimizer": "hybrid_adam",
+    "max_requests": 1300,
+    "directions": 1,
+    "mask_resolution": "full",
+    "mask_selection": "last",
+    "obfuscation_coefficient_clip": true,
+    "fidelity_loss": "squared_error"
+  },
+  "optimization_diagnostics": {
+    "transform": "shearlet",
+    "optimization": "full_hybrid_adam",
+    "model_gradient": "black_box_spsa_estimate",
+    "model_score_evidence": "sampled_label_frequency",
+    "finite_difference_denominator": "actual_clipped_probe_displacement",
+    "requests": 804,
+    "request_bound": 806,
+    "mask_parameters": 3211264,
+    "coefficient_shape": [
+      3,
+      49,
+      256,
+      256
+    ],
+    "mask_resolution": "full",
+    "mask_shape": [
+      49,
+      256,
+      256
+    ],
+    "mask_selection": "last",
+    "obfuscation_coefficient_clip": true,
+    "fidelity_loss": "squared_error",
+    "perturbation_directions": 1,
+    "selected_step": 8,
+    "mask_energy": 0.5152364192561272,
+    "spatial_energy": 0.3091092598638709,
+    "probability_drop_removed": 0.0,
+    "retained_probability_ratio": 1.0,
+    "retained_score_distortion": 0.0,
+    "evaluation": "clean_kept_and_removed_images; resampled_common_noise_optimization",
+    "fidelity_reference": "one",
+    "fidelity_reference_score": 1.0,
+    "noise_channels": "shared_gray",
+    "noise_workers": 4,
+    "spatial_energy_domain": "clipped_grayscale_reconstruction",
+    "unbiased_sampling_distortion": true,
+    "normalize_final": true,
+    "final_normalization_divisor": 0.5396623101902491,
+    "retained_clipped_fraction": 0.0,
+    "retained_raw_range": [
+      0.12416188654410938,
+      0.5396623101902491
+    ],
+    "removed_clipped_fraction": 0.0,
+    "removed_raw_range": [
+      0.12669723970072144,
+      0.5334089037280666
+    ],
+    "round_trip_max_error": 4.440892098500626e-16
+  },
+  "history": [
+    {
+      "step": 0,
+      "requests": 32,
+      "best_step": 0,
+      "loss": 2.235870717868238,
+      "distortion": 0.0,
+      "mask_energy": 1.0,
+      "spatial_energy": 0.617935358934119
+    },
+    {
+      "step": 1,
+      "requests": 128,
+      "best_loss": 2.01539699929005,
+      "best_step": 1,
+      "probe_distortions": [
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "estimated_gradient_norm": 0.0,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.09695102017873247,
+      "loss": 2.01539699929005,
+      "distortion": 0.0,
+      "mask_energy": 0.9030489798212703,
+      "spatial_energy": 0.5561740097343897
+    },
+    {
+      "step": 2,
+      "requests": 224,
+      "best_loss": 1.7949232807118611,
+      "best_step": 2,
+      "probe_distortions": [
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "estimated_gradient_norm": 0.0,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.09695102017873225,
+      "loss": 1.7949232807118611,
+      "distortion": 0.0,
+      "mask_energy": 0.8060979596425394,
+      "spatial_energy": 0.4944126605346609
+    },
+    {
+      "step": 3,
+      "requests": 320,
+      "best_loss": 1.5744495621336694,
+      "best_step": 3,
+      "probe_distortions": [
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "estimated_gradient_norm": 0.0,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.09695102017873247,
+      "loss": 1.5744495621336694,
+      "distortion": 0.0,
+      "mask_energy": 0.7091469394638062,
+      "spatial_energy": 0.4326513113349316
+    },
+    {
+      "step": 4,
+      "requests": 416,
+      "best_loss": 1.3539758435554798,
+      "best_step": 4,
+      "probe_distortions": [
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "estimated_gradient_norm": 0.0,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.09695102017873239,
+      "loss": 1.3539758435554798,
+      "distortion": 0.0,
+      "mask_energy": 0.6121959192850747,
+      "spatial_energy": 0.37088996213520264
+    },
+    {
+      "step": 5,
+      "requests": 512,
+      "best_loss": 1.50850212497728,
+      "best_step": 5,
+      "probe_distortions": [
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "estimated_gradient_norm": 0.0,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.09695102017873244,
+      "loss": 1.50850212497728,
+      "distortion": 0.375,
+      "mask_energy": 0.5152448991063333,
+      "spatial_energy": 0.30912861293547345
+    },
+    {
+      "step": 6,
+      "requests": 608,
+      "best_loss": 1.258384600238974,
+      "best_step": 6,
+      "probe_distortions": [
+        [
+          0.125,
+          0.25
+        ]
+      ],
+      "estimated_gradient_norm": 1342.1816561935611,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.0522117807342936,
+      "loss": 1.258384600238974,
+      "distortion": 0.125,
+      "mask_energy": 0.5152387044102905,
+      "spatial_energy": 0.3090729479143418
+    },
+    {
+      "step": 7,
+      "requests": 704,
+      "best_loss": 1.1959227959712067,
+      "best_step": 7,
+      "probe_distortions": [
+        [
+          0.1875,
+          0.25
+        ]
+      ],
+      "estimated_gradient_norm": 681.6209481271625,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.04063351906421053,
+      "loss": 1.1959227959712067,
+      "distortion": 0.0625,
+      "mask_energy": 0.5152375117686526,
+      "spatial_energy": 0.309092642101277
+    },
+    {
+      "step": 8,
+      "requests": 800,
+      "best_loss": 1.1334549389838688,
+      "best_step": 8,
+      "probe_distortions": [
+        [
+          0.0625,
+          0.0625
+        ]
+      ],
+      "estimated_gradient_norm": 0.0,
+      "regularizer_gradient_norm": 0.005087435746284457,
+      "mean_mask_change": 0.035820889550141136,
+      "loss": 1.1334549389838688,
+      "distortion": 0.0,
+      "mask_energy": 0.5152364192561272,
+      "spatial_energy": 0.3091092598638709
+    }
+  ],
+  "convergence": {
+    "local_optimality_verified": false,
+    "global_optimality_guaranteed": false,
+    "reason": "Eight-step geometry/path pilot. No stationarity test or seed comparison; finite noisy directional estimates do not certify optimality.",
+    "zero_difference_pairs": 6,
+    "total_pairs": 8,
+    "last_mean_mask_change": 0.035820889550141136
+  },
+  "effective_provider_settings": {
+    "backend": "vertex",
+    "model": "gemini-3.5-flash-lite",
+    "requested_temperature": 1.0,
+    "effective_temperature": 1.0,
+    "temperature_control": "provider_default_ignored",
+    "token_budget": 128,
+    "native_logprobs": false
+  },
+  "all_requests_same_prompt": true,
+  "prompt_sha256": "8d2528b1e5b582d9f1deee938a736cc664165133144d5f9917a33da814c5a3ba",
+  "numeric_padding_normalized_responses": 49,
+  "usage": {
+    "candidatesTokenCount": 3709,
+    "promptTokenCount": 13603000,
+    "totalTokenCount": 13606709,
+    "cachedContentTokenCount": 7125888
+  },
+  "artifact_sha256": {
+    "config.json": "5b09126450c2bc244c673aec3cbb9b3280df4f52ad41a096eae091962e5021ae",
+    "classification_prompt.txt": "8d2528b1e5b582d9f1deee938a736cc664165133144d5f9917a33da814c5a3ba",
+    "input_tensor.npy": "900a04f69a38719632d9463a51f2a8e8254566fddc3dd9f793c722f32959dd83",
+    "input.png": "4c7877970c3eb86889d36a574758c73e7fd5237e37abda89b4652ba4c8d1292b",
+    "mask.npy": "bb7d05ccfd4377ef8b7bdaddb512034a385696e2f1b325472ffdc3cf9916e652",
+    "requests.jsonl": "2e762c21a046acf79469c84e53fd5fcc3b7ac4ef40c29b944178302eca8e0704",
+    "history.json": "e65241ef4fefa44b8b38b122f33020198b19f27956ce0b49a0daa4d8487115dc",
+    "retained.png": "683455288f8eac51d4eed32b4dee6deaf835e46ef840300d53f88287f9515af6",
+    "removed.png": "35274522dc77bf4e0f8fca8ca93e6065eda59ac24de2a3f2d8c91e0d6f13b0ad"
+  },
+  "untested": [
+    "Complete 150-step author example with Gemini",
+    "Original VGG19 optimization rerun",
+    "Multiple seed stability",
+    "Controlled nose/fur perturbations"
+  ],
+  "interpretation": "Full independent coefficient mask restores geometry. This pilot has not isolated necessary evidence: retained and complement images both remain classified as Afghan hound in all held-out samples. Similar pictures or decreasing loss do not validate a model-specific nose or fur explanation."
+}

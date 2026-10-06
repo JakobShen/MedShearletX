@@ -35,6 +35,8 @@
 
 原 notebook 最终计算的是解释图最大类别概率除以原图最大类别概率，可能换成另一类别。正式结果采用论文文字定义的 **固定目标类** score 比值，另行记录解释图预测类别，以避免把换类误称为 retained probability。
 
+Notebook 的 `retained_information` 则是最大值归一化后的显示解释图 L1 norm 除以原图 L1 norm，`sum(abs(display_image)) / sum(abs(original_image))`。它受亮度与显示归一化影响，与 mask mean、像素面积及信息熵均不同；不能把这些数字互换。本项目保留原来的优化 loss，这条说明不新增 information loss。
+
 ## Gemini score 与 API 限制
 
 模型输出类别是分类决策；模型自己写出的 confidence 数字不进入 score。每次完整任务调用仍包含全部 1000 类。类别使用稳定数字 ID；采样分类可把无歧义的数字补零变体映射回同一配置类别，并记录格式统一，例如 `0160` 与 `160`。Native token scoring 不使用这种格式统一来拼造概率。无效回答、拒答或 API 失败不能静默删除后重新归一化。
@@ -66,6 +68,18 @@ Dense profile 恢复完整 mask、256 输入、4 scales、全 1 初始化、作�
 Author-code profile 现在明确复制混合 coefficients 后、inverse transform 前的 `[0,1]` clipping。之前保留 signed coefficients 的 coarse 实验是另一条路径，不能作为它的复现结果。远程模型只能接收图像：重建后的值仍需 clip、8-bit 量化并编码为 PNG，这与原白盒模型接收浮点 tensor 的评分路径不同。最终验证使用实际展示 PNG 的同一像素；图像不另行增强或生成。
 
 API 请求预算需要覆盖原图、所有优化探针和最终验证。16 个 noise samples 与每张图片的重复回答次数是不同维度，不应遗漏其乘积。实验不能把小预算 smoke test 说成完成了 150 或 300 步的原设计。
+
+原论文和代码采用固定步数 Adam，没有全局最优或全局收敛保证，也没有在运行结束时证明局部最优。Mask 空间包含非线性分类器，单张图的 loss 下降不能作为证明。Gemini 的有限回答频率可能在多个扰动上都为 1，导致 SPSA 差分为零；零差分不能说明真实梯度为零。完整 mask 下，一两个随机方向也不能代替原 VGG19 对全部参数的图像自动微分。
+
+原 Afghan 示例使用 VGG19，毛发与纹理的稀疏结果属于那个分类器及优化过程。Gemini 图片中鼻子更明显这一视觉现象，本身既不能定位实现错误，也不能证明 Gemini 依赖鼻子。当前 objective 寻找能保留目标回答的稀疏表示，没有直接惩罚移除图的同类回答；移除图仍被识别不违反这个 objective，却阻止“已经隔离必要或唯一证据”的结论。需要稳定的优化结果与鼻子/毛发的受控干预，才能检验模型特征解释。
+
+### 独立作者 FFT 公式对照
+
+[对照测试](../tests/test_transform_parity.py) 没有调用 PyShearLab 的分析/合成函数构造参考值，而是逐式转写 upstream `code/shearletx.py` 的 FFT、shift、RGB/gray 与 dual-frame synthesis，使用已安装的 NumPy/SciPy。输入为实际 Afghan 的 float32 tensor-bilinear 预处理结果；随机 full mask 在 band 和空间上均变化，可检测全 1 round trip 掩盖的索引错误。
+
+[诊断 JSON](results/author-transform-parity.json) 记录六个通过的离线测试。49-band 默认 filters 的最大虚部为 `7.97e-16`；作者 real cast、共轭与 shift 约定在这个偶数尺寸、近乎实数的滤波器组上没有造成结构差异。RGB analysis 的 float64 最大误差 `5.55e-16`，随机 mask synthesis 为 `3.33e-16`；作者 float32 FFT/filter casts 的对应误差分别为 `2.53e-7`、`2.43e-7`，最终 clip/max 后为 `4.68e-7`。Float32 显示 PNG 只有 2/196608 个通道值差 1 LSB。
+
+实际 core 的混合 coefficients 先 clip、final clip/max、移除图与 grayscale 空间正则均与独立 float64 参考相符；三个 PNG 完全相同。把 clipping 错放到 inverse 后会改变 83.37% 的扰动图通道值，故测试能区分这个位置。NumPy 转置数组的 float32 mean reduction 有 `5.42e-6` 累计误差，同一数据改为连续存储或 float64 累计即降至 `5.44e-10`、`2.92e-10`，该数值差异另行保留。这里检查实际 geometry 与输入/输出路径，不是 CUDA FFT bitwise reproduction，也不是整个 VGG 优化器的 parity，更不证明收敛或 Gemini 的特征依赖。
 
 ### 小样本 fidelity 的无偏估计
 
@@ -118,7 +132,7 @@ python -m medshearletx imagenet --config configs/vertex-imagenet.json --root . -
 
 Dry run 检查类别、数据、配置和预算。实际运行要求 output directory 为空；重复实验选择新目录。`classification_prompt.txt` 保存完整 1000-way prompt，`requests.jsonl` 保存去除敏感信息的逐次模型证据，`selection.json`、`reference.json`、`retained.json`、`removed.json` 保存不同阶段的采样统计。Mask、优化 history、preprocessing、effective generation settings 与最终图均另行保存。实验结束后以 `result.json` 的实际数值为准，不预先填写 retained frequency 或结论。
 
-## Dense Afghan hound profiles（结果待验证）
+## Dense Afghan hound profiles 与八步 pilot 结果
 
 当前结构验证与后续完整运行使用仓库原始 `code/imgs/ILSVRC2012_val_00017625.JPEG`、全部 1000 个 ImageNet 类。上游示例将其作为 Afghan hound，ID 160，完整名称为 `Afghan hound, Afghan`；这个参考标签及其来源写入 `image_metadata`，不代替 Gemini 的实际分类。
 
@@ -137,7 +151,21 @@ Author-code 与 pilot 的共同设置为 49×256×256 dense mask、初始全 1�
 
 每轮先用原图 32 次回答选择并固定目标；完整 1000 类始终进入每一次 API 调用。原图、最终保留图、移除图各用 128 个独立回答验证，不使用选择或优化探针的计数替代。每个回答最多重试三次，整轮共享 32 次临时故障重试额度；所有实际调用经过 audit 与硬限制，无效分类回答不被静默丢弃。
 
-150 步 author-code profile 的计划上界为 `32 + 3×128 + 2×(3 + 16×(1 + 3×150)) + 32 = 14886` 次物理尝试，硬上限 15000。8 步 pilot 的同类上界为 `32 + 3×128 + 2×(3 + 16×(1 + 3×8)) + 32 = 1254`。上界保守包含一次可复用的优化 reference；最终以 dry-run 计划和实际 `requests.jsonl` 计数为准。**Dense pilot 结果尚未填写**，八步只能验证参数形状、预处理、噪声与重建路径，不能证明收敛、解释质量或医疗 audit 成功。
+150 步 author-code profile 的计划上界为 `32 + 3×128 + 2×(3 + 16×(1 + 3×150)) + 32 = 14886` 次物理尝试，硬上限 15000。8 步 pilot 的同类上界为 `32 + 3×128 + 2×(3 + 16×(1 + 3×8)) + 32 = 1254`。上界保守包含一次可复用的优化 reference；最终以 dry-run 计划和实际 `requests.jsonl` 计数为准。**150 步 author-code 和 300 步 paper-objective 尚未运行**。
+
+2026-10-06 的八步 dense pilot 保存在本地 `runs/vertex-afghan-imagenet-full-pilot-20261006-231407/`，源码为 `c7d790ad15180bba55a30277f9e003548e603a1e`。实际 **1221 次物理尝试**，其中一次临时故障重试，耗时 374.7 秒。32/32 原图选择回答为 Afghan hound（ID 160）；下表使用独立于选择和优化的最终回答：
+
+| 验证输入 | Afghan hound 回答 | 目标类频率 | 95% Wilson interval |
+| --- | --- | --- | --- |
+| 原图 | 128 / 128 | 100% | 97.09–100% |
+| 保留图 | 128 / 128 | 100% | 97.09–100% |
+| 移除图 | 128 / 128 | 100% | 97.09–100% |
+
+固定目标频率保留率为 100%，移除后的目标频率下降为 0。这轮 **没有隔离必要分类证据**，八步只检查了完整参数形状与实际输入/输出路径，不能声称整个优化器与 VGG 一致、解释成功、收敛或医疗 audit 成功。最后使用 step 8 的 `49×256×256` mask，mean 为 `0.515236`，这不是保留 51.52% 的信息。
+
+![八步完整 mask Gemini 实测对照](assets/gemini35-afghan-full-pilot-20261006/comparison.png)
+
+8 组分类项正负探针有 6 组差分为零；另两组估计梯度 norm 为 `1342.18`、`681.62`，而局部正则梯度 norm 约 `0.00509`。Step 8 的平均 mask 变化仍为 `0.03582`。采样频率的饱和与高维随机差分的噪声都可能影响这个优化过程；不能把零差分或 loss 下降当成驻点证明，也不能仅凭形状判断鼻子或毛发是 Gemini 的决定性特征。[可共享结果与完整 history](results/gemini35-afghan-full-pilot-20261006.json) 保存逐步值及未验证事项，逐步图可在该 run 的 `index.html` 查看。
 
 ## 历史 coarse Afghan 实验与必要性检查
 
