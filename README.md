@@ -1,3 +1,129 @@
+# MedShearletX: VLM extension (first implementation)
+
+This fork adds an independent **black-box VLM adaptation** of ShearletX.
+The original classifier experiments are below and remain in `code/`.
+The new package needs Python **3.10+** and runs without PyTorch or model weights.
+Real VLM endpoints have **not** been tested yet; the offline demo uses a mock
+classifier and the actual PyShearLab transform.
+
+## Plan and score choices
+
+The Chinese [design and implementation plan](docs/vlm-design.md) explains the
+paper, existing repository structure, score choices, limitations and next steps.
+The first version preserves the original target class score while penalizing
+mask size and reconstructed spatial energy. It replaces image gradients with
+SPSA on a coarse mask for each shearlet band. It is an approximation of the
+method, with a smaller mask search space, rather than a reproduction of all
+paper results or theoretical guarantees.
+
+| Score | Evidence | Use |
+| --- | --- | --- |
+| `probability` | Candidate token logprobs normalized over configured labels | Default when complete logprobs are available |
+| `log_margin` | Target logprob minus strongest competing label logprob | Compare optimization behavior when probabilities saturate |
+| `agreement` | Target-label frequency across independent sampled responses | Alternative for deployments without logprobs |
+
+In a binary task probability and log margin use the same evidence on different
+scales. Their comparison is about optimization behavior. These scores measure
+model behavior; none is automatically a calibrated probability of a correct
+medical diagnosis. Entropy, candidate token mass and sampling Wilson intervals
+are reported as diagnostics. Model-written confidence values are not used.
+
+Missing class logprobs, non-class responses, refusals and malformed output fail
+explicitly. The runner records unavailable score modes; it does not silently
+substitute another score. API capability depends on the actual model and server.
+
+## Quick start
+
+Use Python 3.10 or newer; the original requirements are for the old experiments.
+Create a separate environment for this package:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[shearlet]'
+python -m unittest discover -s tests -v
+python -m medshearletx demo --output output/demo
+```
+
+The optional `shearlet` extra uses a pinned upstream PyShearLab revision. A small
+scoped compatibility adapter handles its filter tuple division under current
+NumPy; installed library files are not edited. Without that extra, the explicit
+`--transform identity` demo tests the pipeline in pixel space; it is not ShearletX.
+
+## Configure a deployment, then probe it
+
+Copy one JSON file from `configs/` and set its model, URL, question and labels.
+The API key lives in the environment variable named by `api_key_env`; keep keys
+out of configuration files and Git. The existing GitHub token is not a VLM key.
+
+```bash
+python -m medshearletx run --config configs/mock.json --images /path/to/images --output output/preview --dry-run
+python -m medshearletx probe --config configs/your-model.json --images /path/to/images --output output/probe
+python -m medshearletx run --config configs/your-model.json --manifest /path/to/samples.csv --output output/comparison
+```
+
+`--dry-run` checks configuration, input paths and query bounds without model
+requests. `probe` tests the configured scores on the processed original image;
+it does not optimize a mask. `run` preflights the actual transform before the
+first model request. The default limit is one image. Use `--limit` deliberately
+with `max_total_requests`; each agreement evaluation costs `repeats` calls.
+
+OpenAI/vLLM use Chat Completions; Gemini uses generateContent. The OpenAI and
+Gemini templates default to agreement until logprob support is confirmed. To
+probe native support, set `supports_logprobs: true` and add `probability` and
+`log_margin` to `scores`. This declares the requested capability, not a guarantee.
+For recent vLLM, `class_token_ids` can map actual labels to the corresponding
+single-token A/B/... IDs, avoiding top-k omissions. IDs are deployment-specific.
+
+Model-specific reasoning controls belong in `generation_options`. Some models
+need a larger output budget or `token_budget_field: "max_completion_tokens"`;
+native scoring still requires a single visible class token. Fixed provider seeds
+are rejected for agreement because they can produce correlated repeated draws.
+
+## Module boundaries and output
+
+| Location | Responsibility |
+| --- | --- |
+| `medshearletx/types.py` | Classification task and provider evidence contracts |
+| `medshearletx/backends/` | Provider protocol adapters and backend registry |
+| `medshearletx/scoring.py` | Score extraction and uncertainty diagnostics |
+| `medshearletx/data.py` | Lazy folder/CSV dataset and image loading |
+| `medshearletx/transforms.py` | Shearlet representation and explicit identity control |
+| `medshearletx/explainer.py` | Grouped mask optimization and query budget |
+| `medshearletx/runner.py`, `cli.py` | Preprocessing, comparison artifacts and commands |
+
+Adding a deployment using an existing protocol requires only **one config**.
+A new protocol implements `Backend.predict` and registers its builder; the
+scorer, loader and optimizer do not change. CSV input requires `image_path`
+(relative to the CSV or absolute); `sample_id`, `label` and metadata are optional.
+
+Each run saves config, query plan, results and summary JSON, plus each score's
+`retained.png`, `removed.png`, coarse `mask.npy` and optimization history. The
+original prediction target stays fixed across masks and score modes. Native
+reference evidence is shared across probability and log margin. Kept and removed
+images are assessed with the same available class probabilities, alongside score
+distortion, mask energy and clipping diagnostics. Sampling uses a separate
+frequency estimate and reports its finite-sample uncertainty.
+
+Input is currently a single-frame, prewindowed **8-bit raster image**. Defaults
+preserve aspect ratio and pad to a square (`resize_mode: "letterbox"`), with the
+exact preprocessing recorded. The 128px templates are inexpensive plumbing
+settings, not validated medical resolution choices. Set an appropriate
+`image_size` before a medical experiment; `stretch` is available only explicitly.
+Recognized integer/float/high-bit modes and multiframe images are rejected.
+DICOM/windowing and volumetric loading should be added as independent data
+adapters. Signed coefficients are preserved; pixels are clipped and quantized
+only for PNG/model input. Saved kept/removed images need not sum to the original.
+
+Next: use the supplied VLM API to check tokenization/capabilities and compare
+score sensitivity and cost. A later medical audit needs a defined task and an
+independent labeled holdout for classification, calibration and explanation
+quality; no medical-model claims have been established by the offline tests.
+
+---
+
+## Original ShearletX repository
+
 <div align="center">
 	<a href = "https://arxiv.org/pdf/2211.12857.pdf">
         Paper Title: Explaining Image Classifiers with Multiscale Directional Image Representation

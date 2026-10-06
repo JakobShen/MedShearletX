@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "medshearletx"
+version = "0.1.0"
+description = "Black-box VLM classification explanations in shearlet space"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24,<2", "Pillow>=10"]
+
+[project.optional-dependencies]
+shearlet = [
+    "scipy>=1.11",
+    "pyshearlab @ https://github.com/stefanloock/pyshearlab/archive/4cb8a740f0075913f0efc6ffa2488ea3aab970dd.zip",
+]
+
+[project.scripts]
+medshearletx = "medshearletx.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["medshearletx*"]

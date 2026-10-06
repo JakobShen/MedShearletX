@@ -16,5 +16,16 @@ scatter_data/
 # seed project
 .DS_Store
 
+# VLM extension: local environments, credentials and run artifacts
+.venv/
+.idea/
+.env
+.env.*
+!.env.example
+output/
+*.egg-info/
+build/
+dist/
+github-token*.txt
 
 
