@@ -14,7 +14,7 @@ from .backends.retry import RetryingBackend
 from .data import ImageDataset, ImageSample
 from .explainer import BlackBoxShearletX, ExplainerConfig
 from .figures import save_explanation_figure, save_optimization_figure
-from .runner import describe_result, preprocess, write_json
+from .runner import describe_result, preprocess, preprocess_pixels, write_json
 from .scoring import Scorer
 from .step_visuals import StepVisualizer
 from .tasks import load_task
@@ -91,12 +91,13 @@ def run_experiment(config, root, output, progress=print):
         raise ValueError("Output directory must be empty; choose a new run directory")
     try:
         return _run_experiment(config, root, output, progress)
-    except Exception as error:
+    except (Exception, KeyboardInterrupt) as error:
         if (output / "plan.json").is_file():
             log = output / "requests.jsonl"
             records = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             write_json(output / "failure.json", {
-                "status": "error", "error_type": type(error).__name__,
+                "status": "interrupted" if isinstance(error, KeyboardInterrupt) else "error",
+                "error_type": type(error).__name__,
                 "recorded_attempts": len(records),
                 "failed_attempts": sum(row["status"] == "error" for row in records),
                 "checkpoint_available": (output / "checkpoint-mask.npy").is_file(),
@@ -121,7 +122,10 @@ def _run_experiment(config, root, output, progress):
     scoring = Scorer(reliable, task, mode="agreement",
                      **{"repeats": 2, **config.get("optimization_sampling", {})})
     explainer = BlackBoxShearletX(scoring, create_transform(config["transform"]), optimizer)
-    representation = explainer.prepare_image(image)  # Local preflight before any billable call.
+    pixels = preprocess_pixels(dataset.load(dataset[0]), config) if config.get("resize_filter") == "tensor_bilinear" else None
+    if pixels is not None:
+        np.save(output / "input_tensor.npy", pixels)
+    representation = explainer.prepare_image(image, pixels=pixels)  # Local preflight before any billable call.
     started = time.monotonic()
     selector = Scorer(reliable, task, mode="agreement", repeats=plan["selection_samples"],
                       workers=config.get("evaluation_workers", 8))
@@ -149,6 +153,7 @@ def _run_experiment(config, root, output, progress):
         output, image, explainer.transform, representation[1],
         model=config["model"].get("model", getattr(backend, "model", config["model"]["backend"])),
         target_label=target, normalize_final=optimizer.normalize_final, grid_size=optimizer.grid_size,
+        mask_resolution=optimizer.mask_resolution,
     )
     explanation = explainer.explain(image, target=target, reference=selection,
                                     representation=representation, progress=on_step,
@@ -166,8 +171,9 @@ def _run_experiment(config, root, output, progress):
     write_json(output / "removed.json", describe_result(removed, target))
     before = reference.probabilities[target]
     ratio = retained.probabilities[target] / before if before else None
+    mask_description = "full coefficient mask" if optimizer.mask_resolution == "full" else "grouped mask"
     metadata = {"evidence": "sampled_label_frequency",
-                "approximation": f"API adaptation: {optimizer.optimizer}, grouped mask, finite sampling; no native logprobs."}
+                "approximation": f"API adaptation: {optimizer.optimizer}, {mask_description}, finite sampling; no native logprobs."}
     for name, result in (("reference", reference), ("retained", retained)):
         metadata.update({f"{name}_count": result.sample_counts[target],
                          f"{name}_samples": result.requests,

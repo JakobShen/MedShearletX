@@ -1,4 +1,4 @@
-# MedShearletX: VLM extension (first implementation)
+# MedShearletX: VLM API experiments
 
 This fork adds an independent **black-box VLM adaptation** of ShearletX.
 The original classifier experiments are below and remain in `code/`.
@@ -11,12 +11,15 @@ PyShearLab transform.
 
 The Chinese [design and implementation plan](docs/vlm-design.md) explains the
 paper, existing repository structure, score choices, limitations and next steps.
-The explainer combines target-score fidelity with penalties on mask size and
-reconstructed spatial energy. Paper profiles optimize the fixed target score
-toward one. Hybrid Adam uses SPSA for the API classification gradient and exact
-local gradients for the regularizers, on a coarse mask for each shearlet band.
-This adapts the method to APIs without image gradients; it does not reproduce
-the original optimizer, full mask search space or theoretical guarantees.
+The corrected paper profiles use a **dense 49×256×256 mask: 3,211,264 independent
+parameters shared across RGB**. They apply no grid expansion, pooling or mask
+smoothing. Earlier grouped-mask experiments remain explicit coarse baselines.
+Hybrid Adam estimates the API classification gradient with SPSA and computes
+local regularizer gradients through the synthesis adjoint. Gemini provides
+neither image gradients nor usable native logprobs on the tested deployment;
+classification uses sampled response frequencies. PNG clipping and 8-bit
+quantization also differ from the original floating-point white-box classifier.
+Restoring the full mask does not make the resulting experiment a 1:1 replication.
 
 | Score | Evidence | Use |
 | --- | --- | --- |
@@ -82,7 +85,7 @@ need a larger output budget or `token_budget_field: "max_completion_tokens"`;
 native scoring still requires a single visible class token. Fixed provider seeds
 are rejected for agreement because they can produce correlated repeated draws.
 
-## Paper-image ImageNet experiment
+## Historical coarse paper-image experiment
 
 [The experiment protocol](docs/imagenet-replication.md) documents the exact image,
 all 1000 classes, paper parameters, sampling score and API adaptations. This
@@ -117,37 +120,41 @@ request cap applies even with concurrent sampling. No keys or headers enter
 these records. `result.json` links the PNG/PDF figures and preserves the raw
 classification counts, removed-image check, optimization history and settings.
 
-## Afghan hound: complete and five-class tasks
+## Afghan hound: dense author-code and paper-objective profiles
 
-The two new profiles use the original repository image
-`code/imgs/ILSVRC2012_val_00017625.JPEG`. Their measured results are **pending**;
-the Walker foxhound numbers above belong to the earlier standing-dog experiment.
+These profiles use `code/imgs/ILSVRC2012_val_00017625.JPEG` and all 1000 original
+ImageNet classes. The original Afghan notebook uses a full mask, 150 Adam steps,
+learning rate 0.1, 16 Monte Carlo noise samples and mask/spatial weights 1/2.
+It minimizes squared target-score error against one, uses mean L1 penalties,
+clips mixed coefficients before the inverse transform, and returns the last
+mask. The manuscript's Eq. (7) instead uses a linear expected class-score term;
+its experiments use 300 steps. These are separate objectives and protocols.
 
-| Config | Classification task |
+| Config | Purpose |
 | --- | --- |
-| `configs/vertex-afghan-imagenet.json` | All 1000 original ImageNet labels, output codes `000`–`999` |
-| `configs/vertex-afghan-fiveway.json` | Afghan hound, beagle, golden retriever, English foxhound, bulldog; codes A–E |
+| `configs/vertex-afghan-imagenet.json` | Dense 150-step author-code profile; planned bound 14886 attempts including retries, hard cap 15000 |
+| `configs/vertex-afghan-imagenet-pilot.json` | Same dense structure, eight steps; planned bound 1254; verifies the implementation, not convergence |
+| `configs/vertex-afghan-paper-objective.json` | Dense 300-step linear `1-p` profile; author-code L1 mean normalization declared, mixed-coefficient clipping disabled |
+| `configs/vertex-afghan-imagenet-coarse.json`, `configs/vertex-afghan-fiveway-coarse.json` | Earlier grouped-mask baselines; separate from the dense profiles |
 
-Each run selects its target from the original image and keeps that target fixed.
-Every API query uses that run's entire candidate set, including perturbation and
-final evaluation queries. The 1000-class task stays 1000-way after selection;
-selecting a target does not turn it into a binary Walker foxhound question.
-The five-class profile is an explicitly restricted comparison that includes
-Afghan hound. Its frequencies refer to that different task, so interpret the two
-profiles' results with their candidate sets and prompts.
+Dense profiles resize floating-point RGB input to 256×256 using tensor bilinear
+interpolation with `align_corners=False`, `antialias=False`, and preserve that
+floating-point input for the shearlet transform. Four scales yield 49 bands.
+Uniform noise uses grayscale-band means and sample standard deviations
+(`ddof=1`), shared across RGB; masks start at one. The explicit remaining
+adaptations are the black-box classification gradient, sampled frequency score,
+and PNG input required by Gemini. Dense pilot results are **pending**.
 
-Both profiles use 256×256 stretch, four scales and 49 shearlet bands, grayscale
-coefficient noise shared across RGB, and a 4×4 mask grid per band. They run 50
-hybrid Adam steps with two SPSA directions, four answers per perturbed image,
-two noise samples, learning rate 0.03 and initial perturbation radius 0.15.
-Selection uses 32 answers; independent original/retained/removed evaluation uses
-128 each. The planned bound is **2868 physical attempts including 32 retries**,
-with a hard limit of 3000 for each run.
+Every API query includes the complete candidate set. The target selected on the
+original image stays fixed; selection does not turn a 1000-way query into a
+binary question. Historical five-class queries used Afghan hound, beagle,
+golden retriever, English foxhound and bulldog, with codes A–E and a breed
+question. Their scores belong to that restricted task.
 
 ```bash
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet-pilot.json --dry-run
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet-pilot.json
 python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json --dry-run
-python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json
-python -m medshearletx experiment --config configs/vertex-afghan-fiveway.json
 ```
 
 `experiment` is the generic alias of `imagenet`. Without `--output`, each
@@ -165,6 +172,16 @@ current-iteration previews reconstructed locally, with no extra API calls and
 no separately measured per-step class probability. Final selected-mask figures
 and held-out sampling estimates remain separate in `result.json`.
 
+The completed **coarse five-class** run made 2833 physical attempts; original,
+retained and removed images each produced 128/128 Afghan hound responses.
+It therefore did **not** isolate necessary classification evidence and is not a
+successful medical audit. The coarse 1000-class startup failed after 184
+attempts on numeric formatting; its corrected restart was interrupted after
+step 29 and has no final evaluation. These records are separate from the new
+dense pilot. Mask mean is an average coefficient weight, not a percentage of
+information retained. Max normalization can make a uniformly scaled kept image
+look unchanged while the remaining image still contains recognizable cues.
+
 ## Module boundaries and output
 
 | Location | Responsibility |
@@ -176,7 +193,7 @@ and held-out sampling estimates remain separate in `result.json`.
 | `medshearletx/data.py` | Lazy folder/CSV dataset and image loading |
 | `medshearletx/tasks.py` | Generic task factory and ordered complete ImageNet labels |
 | `medshearletx/transforms.py` | Shearlet representation and explicit identity control |
-| `medshearletx/explainer.py` | Grouped mask optimization and query budget |
+| `medshearletx/explainer.py` | Dense or explicitly coarse mask optimization and query budget |
 | `medshearletx/runner.py`, `cli.py` | Preprocessing, comparison artifacts and commands |
 | `medshearletx/imagenet_experiment.py`, `figures.py` | Experiment protocol and measured figure export |
 | `medshearletx/step_visuals.py` | Local iteration images, figures and slider |
@@ -187,7 +204,7 @@ scorer, loader and optimizer do not change. CSV input requires `image_path`
 (relative to the CSV or absolute); `sample_id`, `label` and metadata are optional.
 
 Each run saves config, query plan, results and summary JSON, plus each score's
-`retained.png`, `removed.png`, coarse `mask.npy` and optimization history. The
+`retained.png`, `removed.png`, `mask.npy` and optimization history. The
 original prediction target stays fixed across masks and score modes. Native
 reference evidence is shared across probability and log margin. Kept and removed
 images are assessed with the same available class probabilities, alongside score

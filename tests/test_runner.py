@@ -4,11 +4,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 from PIL import Image
 
 from medshearletx.cli import main
 from medshearletx.data import ImageDataset
-from medshearletx.runner import plan_run, preprocess, run
+from medshearletx.explainer import to_image
+from medshearletx.runner import plan_run, preprocess, preprocess_pixels, run
 
 
 class RunnerTests(unittest.TestCase):
@@ -107,6 +109,55 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("figures", rows[0]["iteration_visuals_unavailable"])
         self.assertNotIn("iteration_index", rows[0])
         self.assertTrue((output / "0000/probability/retained.png").is_file())
+
+    def test_tensor_resize_uses_half_pixel_coordinates_and_preserves_fractions(self):
+        source = np.repeat(np.array([[0, 100], [200, 255]], dtype=np.uint8)[..., None], 3, axis=2)
+        image = Image.fromarray(source)
+        config = {"image_size": 4, "resize_mode": "stretch", "resize_filter": "tensor_bilinear"}
+        expected = np.array([[0, 25, 75, 100],
+                             [50, 72.1875, 116.5625, 138.75],
+                             [150, 166.5625, 199.6875, 216.25],
+                             [200, 213.75, 241.25, 255]])
+        pixels = preprocess_pixels(image, config)
+        self.assertEqual(pixels.dtype, np.float32)
+        np.testing.assert_allclose(pixels[..., 0] * 255, expected, atol=3e-5, rtol=0)
+        processed, metadata = preprocess(image, config)
+        self.assertEqual(processed.tobytes(), to_image(pixels.astype(np.float64)).tobytes())
+        self.assertFalse(metadata["align_corners"])
+        self.assertFalse(metadata["antialias"])
+        self.assertEqual(metadata["tensor_dtype"], "float32")
+        self.assertGreater(abs(pixels[1, 1, 0] * 255 - processed.getpixel((1, 1))[0]), 0.1)
+
+    def test_tensor_downsample_has_no_antialias_prefilter(self):
+        source = np.repeat(np.arange(16, dtype=np.uint8).reshape(4, 4, 1), 3, axis=2)
+        pixels = preprocess_pixels(Image.fromarray(source), {
+            "image_size": 2, "resize_mode": "stretch", "resize_filter": "tensor_bilinear"})
+        np.testing.assert_allclose(pixels[..., 0] * 255, [[2.5, 4.5], [10.5, 12.5]], atol=2e-6, rtol=0)
+
+    def test_full_mask_run_preserves_float_input_and_last_step_query_bound(self):
+        self.config.update(scores=["agreement"], resize_mode="stretch", resize_filter="tensor_bilinear",
+                           sampling={"repeats": 2}, max_total_requests=14)
+        self.config["explainer"].update(mask_resolution="full", mask_selection="last", steps=1,
+                                        noise_samples=1, resample_noise=True, max_requests=14)
+        source = np.repeat(np.array([[0, 100], [200, 255]], dtype=np.uint8)[..., None], 3, axis=2)
+        Image.fromarray(source).save(self.images / "sample.png")
+        output = self.root / "full-mask-run"
+        self.assertEqual(plan_run(self.config, self.dataset)["total_requests_bound"], 14)
+        rows = run(self.config, self.dataset, output)
+        row = rows[0]
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["requests"], 14)
+        self.assertEqual(row["diagnostics"]["selected_step"], 1)
+        self.assertEqual(row["diagnostics"]["mask_resolution"], "full")
+        mask = np.load(output / "0000/agreement/mask.npy")
+        self.assertEqual(mask.shape, (1, 32, 32))
+        tensor = np.load(output / "0000/input_tensor.npy")
+        self.assertEqual(tensor.dtype, np.float32)
+        with Image.open(output / "0000/input.png") as image:
+            self.assertEqual(image.tobytes(), to_image(tensor.astype(np.float64)).tobytes())
+        with Image.open(output / "0000/agreement/images/f_n/step001.png") as image:
+            self.assertEqual(image.tobytes(), to_image(tensor * mask[0, ..., None]).tobytes())
+        self.assertEqual(json.loads((output / "summary.json").read_text())["prediction_attempts"], 14)
 
 
 if __name__ == "__main__":

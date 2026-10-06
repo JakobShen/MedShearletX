@@ -1,4 +1,4 @@
-# Gemini 3.5 Flash-Lite 的 ImageNet 与少类别实验
+# Gemini 3.5 Flash-Lite：完整 ShearletX mask 与历史实验
 
 完整 ImageNet 实验保留原 ShearletX 的单图分类问题，再把分类器换成远程 VLM。每次 API 调用始终从仓库的 **全部 1000 个 ImageNet 类别**中选择一个类别；不会在选出目标之后改成某一品种的二分类，也不会在解释图评分时缩小候选集。少类别实验则明确配置另一组候选，用来比较任务设计。每一轮内部，类别顺序、完整类别描述、prompt 和生成设置在原图、扰动图、最终解释图之间固定；图片的参考品种不作为正确答案提示给模型。
 
@@ -6,9 +6,9 @@
 
 用户提供的截图对应 [论文 Figure 1](https://arxiv.org/abs/2211.12857) 的 **English foxhound**，其 ImageNet 0-based ID 为 **167**。该图是站立的短毛猎犬。现有仓库 `code/imgs/ILSVRC2012_val_00017625.JPEG` 则是 500×375 的 **Afghan hound** 头像，ID 160；不能把二者当成同一张输入图。
 
-本次匹配截图的输入文件为 `code/imgs/english_foxhound_paper.png`，从用户提供的 `2211.12857v3.pdf` 首页第 7 个嵌入图像对象直接提取，RGB，484×484。原 JPEG 没有包含在当前仓库中，所以这是论文中的绘图 raster，不能宣称恢复了原始 ImageNet 文件。首页第 9 个嵌入图像对象是截图中的原 ShearletX 结果，仅用于参照；新图必须由 Gemini 的实际查询结果及优化出的 mask 重建，不能直接使用论文解释图。
+此前匹配截图的输入文件为 `code/imgs/english_foxhound_paper.png`，从用户提供的 `2211.12857v3.pdf` 首页第 7 个嵌入图像对象直接提取，RGB，484×484。原 JPEG 没有包含在当前仓库中，所以这是论文中的绘图 raster，不能宣称恢复了原始 ImageNet 文件。首页第 9 个嵌入图像对象是截图中的原 ShearletX 结果，仅用于参照；新图必须由 Gemini 的实际查询结果及优化出的 mask 重建，不能直接使用论文解释图。
 
-1000 个类别从 `code/imagenet_utils/imagenet_labels.py` 或 `imagenet_labels.txt` 读取。ID 167 是图片出处的参考标签；实际解释目标取 **Gemini 对原图的预测类别**，随后固定该目标。如果 Gemini 预测不同类别，结果同时记录参考标签与模型预测，不能强行改成 English foxhound。
+1000 个类别从 `code/imagenet_utils/imagenet_labels.py` 或 `imagenet_labels.txt` 读取。站立猎犬的参考 ID 为 167，Afghan 示例的参考 ID 为 160；实际解释目标取 **Gemini 对原图的预测类别**，随后固定该目标。参考标签及其来源与实际预测分别记录，不强行指定模型答案。
 
 ## 原论文与原示例的参数
 
@@ -16,26 +16,28 @@
 
 | 项目 | 原实验设置 |
 | --- | --- |
-| 图像 | RGB，拉伸为 256×256，各像素在 [0,1] |
+| 图像 | 浮点 RGB tensor bilinear 拉伸为 256×256，`align_corners=False`、`antialias=False`，各像素在 [0,1] |
 | Shearlet system | PyShearLab，4 scales，49 bands |
-| Mask | band × 256 × 256，RGB 共享；初始值全 1 |
+| Mask | 49×256×256，共 3,211,264 参数，RGB 共享；初始值全 1，无粗网格或平滑 |
 | Optimizer | Adam，学习率 0.1，其他参数为 PyTorch 默认值 |
 | 优化步数 | 论文 300；示例 notebook 150 |
 | Monte Carlo noise samples | 每步 16 个 |
-| Noise | 各 grayscale shearlet band 的 empirical mean ± standard deviation 范围内采样 uniform noise；RGB 共用 |
+| Noise | 各 grayscale shearlet band 的 empirical mean ± sample standard deviation（`ddof=1`）范围内采样 uniform noise；RGB 共用 |
 | Noise sampling | 原代码每步重新采样 |
 | Mask L1 权重 | 1 |
 | Spatial L1 权重 | 2，基于 grayscale reconstruction |
-| 示例 objective | `maximize_label=True`，概率参考值为 1 |
+| 示例 objective | `maximize_label=True`，平方 fidelity 的参考 score 为 1，L1 penalties 使用 mean normalization |
+| 作者代码的扰动路径 | 混合 coefficient noise 后先 clip coefficients 至 [0,1]，再 inverse transform |
+| 最终 mask | notebook 返回最后一次迭代的 mask |
 | 最终显示 | RGB reconstruction clip 至 [0,1]，再除以最大像素值 |
 
-原论文式 (7) 最大化目标类概率的期望，并扣除 mask L1 和重建图像 L1。原代码则最小化 `mean((1 - p_target)^2)` 加两项正则，使用 `maximize_label=True`；这两者不是完全相同的 objective。复制示例代码时需明确使用后者，不能混用“保持原始 score”和“向 1 最大化”两个实验设计。
+原论文式 (7) 最大化目标类概率的期望，并扣除 mask L1 和重建图像 L1；换成最小化形式，分类项为 `1 - mean(p_target)`。作者发布的示例代码则最小化 `mean((1 - p_target)^2)` 加按元素数归一化的两项 L1，并包含 coefficient clipping。两者的分类项、L1 单位及实现路径不能混称为同一 objective。本项目将 author-code 与 paper-objective 分成配置；后者采用线性分类项，但明确保留 author-code 的 L1 mean normalization，不能宣称完整复现论文式 (7) 的所有约定。
 
 原 notebook 最终计算的是解释图最大类别概率除以原图最大类别概率，可能换成另一类别。正式结果采用论文文字定义的 **固定目标类** score 比值，另行记录解释图预测类别，以避免把换类误称为 retained probability。
 
 ## Gemini score 与 API 限制
 
-模型输出类别是分类决策；模型自己写出的 confidence 数字不进入 score。每次调用仍包含全部 1000 类。可以给类别使用稳定数字 ID，输出必须严格映射回候选类别；无效格式、拒答或 API 失败不作为正确样本，不能静默删除后重新归一化。
+模型输出类别是分类决策；模型自己写出的 confidence 数字不进入 score。每次完整任务调用仍包含全部 1000 类。类别使用稳定数字 ID；采样分类可把无歧义的数字补零变体映射回同一配置类别，并记录格式统一，例如 `0160` 与 `160`。Native token scoring 不使用这种格式统一来拼造概率。无效回答、拒答或 API 失败不能静默删除后重新归一化。
 
 Gemini 的 token logprobs 能力必须以指定部署的实际能力检查为准。即使接口返回 top-20 token logprobs，也不能据此得到全部 1000 类的概率分布。缺少目标 token 不能补成 0，多 token ID 的第一个 token 概率不能当作整个类别概率。新模型或接口可能不再支持已有 logprobs 参数；不得用旧文档中曾支持的功能替代实际验证。
 
@@ -55,17 +57,19 @@ Gemini 的 token logprobs 能力必须以指定部署的实际能力检查为准
 
 远程 API 没有图像梯度，因此无法直接执行原代码的 `loss.backward()`。当前 `hybrid_adam` 使用 SPSA 的正负扰动估计 **API fidelity 项**的梯度，mask L1 与 spatial L1 的梯度则通过本地 synthesis adjoint 精确计算。二者合并后由 Adam 更新，β₁=0.9、β₂=0.999、ε=10⁻⁸，mask 投影回 [0,1]；学习率由各实验配置指定。这样不必用远程随机 score 去近似已经能在本地计算的正则梯度。
 
-Mask 参数采用 band 内粗网格并展开至系数分辨率。每步重新采样 coefficient noise；各方向的 plus、minus、更新后的 candidate 和之前的 best mask 使用同一批 noise。旧 best 需要重新评估，才能与当前 candidate 在同一 Monte Carlo batch 下比较。一个方向时每步有四组 noise probes；两个方向时为六组，并对方向梯度取平均。共同 coefficient noise 可以减少额外图像噪声，但 API 回答本身仍是独立随机采样。网格大小、方向数、步数、sampling repeats、noise samples 和总调用预算都写入结果。
+纠正后的 paper profiles 对每个 band 的每个空间位置独立优化：**49×256×256 = 3,211,264 参数，RGB 共享**。没有 grid expansion、pooling 或 mask smoothing。此前 8×8、4×4 的 grouped masks 只保留为显式 coarse baselines，不再代表默认论文结构。
 
-Paper profile 对齐原图尺寸、4 scales、全 1 初始化、目标参考值 1、grayscale noise statistics、uniform Monte Carlo noise、正则项和最终显示归一化。SPSA、粗网格和采样频率仍是明确的算法偏差，因此本实验是 **ShearletX 的 API 黑盒适配**，不能称为原论文结果的精确复现，也不能继承原图的 37.29%。
+每步重新采样 coefficient noise，正负探针与该步 candidate 共用这批 noise；API 回答仍独立采样。Dense author-code profile 使用一组 SPSA 方向与最后一次迭代 mask；每步有 plus、minus、candidate 三组 noise evaluations。历史 coarse profile 另行重新评估 best mask，不能把那个选择规则带入作者代码复现。参数形状、方向数、目标函数、mask 选择规则、采样量和调用预算均记录在结果中。
 
-原代码在 inverse transform 之前把扰动后的 shearlet coefficients clamp 到 [0,1]；本实现有意保留 **signed coefficients**，不复制该 legacy clipping，这是另一项明确的实现差异。图像编码还会加入 8-bit 量化，发送给模型评分的 final image 必须与展示图的实际像素一致。显示后的像素不再另行增强、绘制或生成。
+Dense profile 恢复完整 mask、256 输入、4 scales、全 1 初始化、作者参数与 noise 路径。输入先用 tensor bilinear 在浮点域拉伸，`align_corners=False`、`antialias=False`，浮点结果直接进入 shearlet transform；不会在 transform 前经 PNG 再量化。Gemini 的图像梯度、内部 class probability 仍不可用，故分类梯度使用黑盒估计、score 使用回答频率。这些变化足以使实验属于 **ShearletX 的 API 适配**，不能称为只替换模型后的数值 1:1 复现，也不能继承原图的 37.29%。
+
+Author-code profile 现在明确复制混合 coefficients 后、inverse transform 前的 `[0,1]` clipping。之前保留 signed coefficients 的 coarse 实验是另一条路径，不能作为它的复现结果。远程模型只能接收图像：重建后的值仍需 clip、8-bit 量化并编码为 PNG，这与原白盒模型接收浮点 tensor 的评分路径不同。最终验证使用实际展示 PNG 的同一像素；图像不另行增强或生成。
 
 API 请求预算需要覆盖原图、所有优化探针和最终验证。16 个 noise samples 与每张图片的重复回答次数是不同维度，不应遗漏其乘积。实验不能把小预算 smoke test 说成完成了 150 或 300 步的原设计。
 
 ### 小样本 fidelity 的无偏估计
 
-首次 foxhound 配置对每张扰动图片使用两个独立回答，新的 Afghan 配置使用四个。直接计算 `(1 - k/n)^2` 会混入 Bernoulli 采样方差：其期望为 `(1-p)^2 + p(1-p)/n`，因此不再只优化原来的平方误差。
+Author-code 配置对每张扰动图片使用两个独立回答。直接计算 `(1 - k/n)^2` 会混入 Bernoulli 采样方差：其期望为 `(1-p)^2 + p(1-p)/n`，因此不再只优化原来的平方误差。
 
 `unbiased_sampling_distortion=true` 对参考 score `s` 使用：
 
@@ -75,9 +79,11 @@ API 请求预算需要覆盖原图、所有优化探针和最终验证。16 个 
 
 `k(k-1)` 统计不同采样之间的目标类命中配对，因此该项的期望为 `p²`。Paper profile 使用 `s=1`，等价于用 misses 的配对数估计 `(1-p)²`。当 `n=2` 时，只在两个回答都未命中目标类时贡献 1，其余情况贡献 0。它去除了平方频率的偏差，仍有采样方差；noise 平均与最终独立验证仍有必要。该设置只允许 agreement score 且 `repeats>=2`。
 
-## 已实现的首次运行配置
+线性 paper-objective 分类项为 `1 - mean(p_target)`，使用频率即可无偏估计，不需要上述二次配对项。
 
-`configs/vertex-imagenet.json` 对齐原图预处理、表示、初始化、正则及 final normalization，同时缩小首次 API 实验的步数和采样量。
+## 历史 coarse 站立猎犬配置
+
+`configs/vertex-imagenet.json` 记录此前 coarse 站立猎犬实验。它使用 8×8 网格、30 步及较小采样量；下面的实测结果只能归属于这个历史配置，不属于新的 dense paper profile。
 
 | 项目 | 本次配置 |
 | --- | --- |
@@ -112,40 +118,47 @@ python -m medshearletx imagenet --config configs/vertex-imagenet.json --root . -
 
 Dry run 检查类别、数据、配置和预算。实际运行要求 output directory 为空；重复实验选择新目录。`classification_prompt.txt` 保存完整 1000-way prompt，`requests.jsonl` 保存去除敏感信息的逐次模型证据，`selection.json`、`reference.json`、`retained.json`、`removed.json` 保存不同阶段的采样统计。Mask、优化 history、preprocessing、effective generation settings 与最终图均另行保存。实验结束后以 `result.json` 的实际数值为准，不预先填写 retained frequency 或结论。
 
-## Afghan hound：1000 类与五类对照（结果待运行）
+## Dense Afghan hound profiles（结果待验证）
 
-新实验使用仓库原始 `code/imgs/ILSVRC2012_val_00017625.JPEG`。上游示例将其作为 Afghan hound；这一参考标签的来源在 `image_metadata` 中记录，不代替 Gemini 的实际分类。两个配置分别为：
+当前结构验证与后续完整运行使用仓库原始 `code/imgs/ILSVRC2012_val_00017625.JPEG`、全部 1000 个 ImageNet 类。上游示例将其作为 Afghan hound，ID 160，完整名称为 `Afghan hound, Afghan`；这个参考标签及其来源写入 `image_metadata`，不代替 Gemini 的实际分类。
 
-| 配置 | 每次调用的候选集 |
+| 配置 | 目标与运行长度 |
 | --- | --- |
-| `configs/vertex-afghan-imagenet.json` | 全部 1000 个 ImageNet 类；Afghan hound 的 ID 为 160，完整名称为 `Afghan hound, Afghan` |
-| `configs/vertex-afghan-fiveway.json` | `Afghan hound`、`beagle`、`golden retriever`、`English foxhound`、`bulldog`，输出 A–E |
+| `configs/vertex-afghan-imagenet.json` | Full author-code profile：150 步、平方 fidelity、最后一个 mask |
+| `configs/vertex-afghan-imagenet-pilot.json` | 同一 full mask 和数据路径，8 步结构验证；不用于声称收敛 |
+| `configs/vertex-afghan-paper-objective.json` | 300 步、线性 `1 - mean(p_target)`，关闭混合 coefficient clipping；L1 使用作者代码的 mean normalization，差异明确记录 |
+| `configs/vertex-afghan-imagenet-coarse.json`、`configs/vertex-afghan-fiveway-coarse.json` | 之前的 4×4 网格实验，明确作为 coarse baselines 保存 |
 
-五分类包含图片的参考品种，避免候选缺失迫使模型选择其他品种。它是另一个任务，问题明确询问狗品种；1000 类配置继续使用完整 ImageNet 的物体分类问题。候选集与问题均不同，因此两轮频率的差异同时受到任务设计影响，不能当成模型内在 confidence 的直接比较。
+Author-code 与 pilot 的共同设置为 49×256×256 dense mask、初始全 1、RGB 共享；每步 16 组重新采样的 shared grayscale uniform noise（sample std，`ddof=1`）；Adam lr 0.1、mask/spatial L1 权重 1/2；平方 fidelity 的参考 score 为 1；混合 coefficients 在 inverse 之前 clip 至 `[0,1]`。分类梯度仍是显式 SPSA 黑盒估计，不是原 classifier 的自动微分。每张扰动图片用两个独立回答估计平方项；这些 repeats 与每步 16 组 coefficient noise 是不同维度。
 
-每轮先用原图 32 次回答选出出现最多的类别并固定。之后的每个扰动与最终评分仍使用该轮完整候选集；固定目标只是指定统计哪一类的频率，不会把调用改成 Afghan/其他、Walker/其他的二分类。目标选择、优化探针和最终原图/保留图/移除图评估使用独立回答。
+配置明确设置 `mask_resolution=full`、`mask_selection=last`；author-code 的 `fidelity_loss=squared_error`、`obfuscation_coefficient_clip=true`，paper-objective 则为 `one_minus_score`、`false`。两条路径都不加入 pooling 或平滑。
 
-| 项目 | 新配置，共用于两种候选集 |
-| --- | --- |
-| Model / generation | Vertex `gemini-3.5-flash-lite`，MINIMAL，最多 128 output tokens，provider default temperature 1.0 |
-| 图像与表示 | 256×256 stretch，4 scales、49 bands，RGB 共用 mask 和 grayscale coefficient noise |
-| Mask | 每 band 4×4 网格，共 784 参数，初始全 1 |
-| Optimizer | Hybrid Adam，50 步；每步两个 SPSA 方向；lr 0.03，radius 初值 0.15 |
-| 采样 | 每张探针图片 4 次回答，每步 2 个重新采样的 uniform coefficient noise |
-| Fidelity / 正则 | 无偏 squared distortion，参考值 1；mask L1 权重 1、spatial L1 权重 2 |
-| 最终验证 | 原图、最终保留图、移除图各 128 个独立回答 |
-| 请求预算 | 名义上界 2836，加全局 32 次重试为 **2868**；整轮硬上限 **3000** |
+输入使用浮点 tensor bilinear stretch 到 256×256，关闭 antialias、`align_corners=False`，保留浮点输入进入 transform。最后显示按作者路径 clip RGB reconstruction、再除以正的最大值；实际 API 输入是量化后的 PNG。参数与完整 mask 恢复不能消除这些 API 与 score 差异，故不宣称原论文结果的精确 1:1 复制。
 
-预算为 `32 + 3×128 + 4×(3 + 2×(1 + 6×50)) + 32 = 2868`；保守计入的优化 reference 复用时少用 4 次。所有重试仍进入同一 audit 日志和硬限制。两种配置目前尚未填写实测 retained frequency、预测类别或结论；这些数值以各自完成后的 `result.json` 为准。它们仍是无图像梯度条件下的 API 适配，不是原论文 150/300 步或 full-resolution mask 的精确 1:1 复现。
+每轮先用原图 32 次回答选择并固定目标；完整 1000 类始终进入每一次 API 调用。原图、最终保留图、移除图各用 128 个独立回答验证，不使用选择或优化探针的计数替代。每个回答最多重试三次，整轮共享 32 次临时故障重试额度；所有实际调用经过 audit 与硬限制，无效分类回答不被静默丢弃。
+
+150 步 author-code profile 的计划上界为 `32 + 3×128 + 2×(3 + 16×(1 + 3×150)) + 32 = 14886` 次物理尝试，硬上限 15000。8 步 pilot 的同类上界为 `32 + 3×128 + 2×(3 + 16×(1 + 3×8)) + 32 = 1254`。上界保守包含一次可复用的优化 reference；最终以 dry-run 计划和实际 `requests.jsonl` 计数为准。**Dense pilot 结果尚未填写**，八步只能验证参数形状、预处理、噪声与重建路径，不能证明收敛、解释质量或医疗 audit 成功。
+
+## 历史 coarse Afghan 实验与必要性检查
+
+这些实验使用 4×4 网格（784 个参数）、50 步、两个 SPSA 方向、每张探针四次回答、每步两组 coefficient noise、lr 0.03、radius 0.15。其计划上界 2868 含重试、硬上限 3000；这些参数和旧结果都不属于纠正后的 full mask profile。
+
+五类候选为 `Afghan hound`、`beagle`、`golden retriever`、`English foxhound`、`bulldog`，输出 A–E，问题询问狗品种。1000 类 baseline 使用完整物体分类问题和数字代码。候选、问题及 verbalizer 均不同，两轮差异不能完全归因于候选数量；五类闭集也没有“看不出狗”的选项。
+
+完成的五类运行保存在本地 `runs/vertex-afghan-fiveway-20261006-224135/`，源码对应 `964c8bc`。实际物理尝试 **2833** 次，其中一次重试；原图、保留图、移除图的独立验证均为 **128/128 Afghan hound**，频率比为 100%。程序执行成功不等于 audit 成功：移除图仍稳定产生同一目标，因此这轮没有隔离必要分类证据。Mask mean 约 0.336 只是软权重均值，不能称为保留 33.6% 或移除 66.4% 的信息。
+
+1000 类初次启动共 184 次尝试，在三次严格格式失败（例如 `0160` 与配置 `160` 的区别）后停止；另一次诊断调用单独保存。格式解析纠正后（`19d33aa`）重新运行，用户在 step 29 后中断，没有完成最终 held-out 评估；checkpoint 和逐次证据保留，不能把进度预览当作完整结果。
+
+最大值归一化会抵消均匀权重的缩放：若 mask 为常数 `a`，保留图 `(a·x)/max(a·x)` 与 `x/max(x)` 相同，而移除图 `(1-a)·x` 仍可能可识别。共同线索、亮度鲁棒性与有限分类任务都可能使两张图继续得到同类回答。必要性检查、采样频率和 mask mean 需要分别报告。
 
 ## 通用命令与逐步绘图
 
 `experiment` 是通用单图实验命令，`imagenet` 保留为兼容名称。`task` 配置必须二选一：`imagenet_labels_path` 读取完整有序 ImageNet 类别，或 `labels` 显式列出候选；另可设置 `question`。旧的顶层 `labels_path` 配置仍可使用。
 
 ```bash
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet-pilot.json --dry-run
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet-pilot.json
 python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json --dry-run
-python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json
-python -m medshearletx experiment --config configs/vertex-afghan-fiveway.json
 ```
 
 未指定 `--output` 时，每次创建新的 `runs/<run_name>-<timestamp>/`，`run_name` 来自配置。指定 output 时仍要求该目录为空；从其他目录运行可传 `--root`。Dry run 不调用模型，也不创建实验输出目录。
@@ -157,10 +170,10 @@ python -m medshearletx experiment --config configs/vertex-afghan-fiveway.json
 | `figures/f_n/stepNNN.png` | 原图、当前保留图、当前移除图与 loss/mask mean |
 | `images/f_n/stepNNN.png` | 当前保留图的原始显示 PNG |
 | `images/removed/stepNNN.png` | 当前移除图的 PNG |
-| `masks/stepNNN.npy` | 对应的粗网格 mask |
+| `masks/stepNNN.npy` | 对应 mask；默认 paper profiles 保存完整 dense 参数 |
 | `metrics.json`、`index.html` | 逐步指标和可直接在本地浏览器打开的 slider |
 
-运行中刷新 `index.html` 可查看最新完成的 step。这些图片直接从当前 mask 与原始系数重建，绘图不增加 API 调用。图中 loss 来自带 coefficient noise 的优化探针；**没有对每一张显示预览另测 VLM score**，因此不能给 step 图写 retained probability 或把 mask mean 当成 confidence。最终选择的 best mask 与最后一个 current mask 可能不同；最终独立验证和 PNG/PDF 图仍单独保存在 `result.json` 及最终图文件中。
+运行中刷新 `index.html` 可查看最新完成的 step。这些图片直接从当前 mask 与原始系数重建，绘图不增加 API 调用。图中 loss 来自带 coefficient noise 的优化探针；**没有对每一张显示预览另测 VLM score**，因此不能给 step 图写 retained probability 或把 mask mean 当成 confidence。Author-code profile 使用最后的 mask，历史 coarse profile 可选择 best mask；选择规则与 step 记录在结果中。最终独立验证和 PNG/PDF 图仍单独保存在 `result.json` 及最终图文件中。
 
 ## 导出图
 
@@ -168,7 +181,7 @@ python -m medshearletx experiment --config configs/vertex-afghan-fiveway.json
 
 采样实验标题写作 `Retained sampling frequency: XX.XX%`，脚注给出固定目标、计数与区间、黑盒近似说明。只有确实测量了 native class probability 的实验才允许使用 `Retained probability`。图中的百分比必须来自保存的结果，不能复用论文截图或模型自己输出的信心。
 
-## 2026-10-06 实测结果
+## 2026-10-06 历史 coarse 站立猎犬实测结果
 
 实际模型为 Vertex `gemini-3.5-flash-lite`。全部 1000 类参与每次分类，最终固定目标为 **166: Walker hound, Walker foxhound**，与论文图的参考类别 **167: English foxhound** 不同。64 次目标选择中 Walker foxhound 有 40 次；下表使用独立于选择和优化的验证样本。
 

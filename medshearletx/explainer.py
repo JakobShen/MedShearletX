@@ -1,4 +1,4 @@
-"""Finite-query, grouped-mask adaptation of the original distortion objective."""
+"""Finite-query shearlet masks with explicit author-code and API choices."""
 
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
@@ -68,6 +68,10 @@ class ExplainerConfig:
     unbiased_sampling_distortion: bool = False
     optimizer: str = "spsa"
     directions: int = 1
+    mask_resolution: str = "grid"
+    obfuscation_coefficient_clip: bool = False
+    mask_selection: str = "best"
+    fidelity_loss: str = "squared_error"
 
     def __post_init__(self):
         for name in ("steps", "grid_size", "noise_samples", "max_requests", "directions"):
@@ -81,10 +85,13 @@ class ExplainerConfig:
         for name, choices in (("fidelity_reference", {"original", "one"}),
                               ("noise_channels", {"rgb", "shared_gray"}),
                               ("spatial_domain", {"rgb_raw", "gray_clipped"}),
+                              ("mask_resolution", {"grid", "full"}),
+                              ("mask_selection", {"best", "last"}),
+                              ("fidelity_loss", {"squared_error", "one_minus_score"}),
                               ("optimizer", {"spsa", "hybrid_adam"})):
             if getattr(self, name) not in choices:
                 raise ValueError(f"{name} must be one of {sorted(choices)}")
-        for name in ("resample_noise", "normalize_final", "unbiased_sampling_distortion"):
+        for name in ("resample_noise", "normalize_final", "unbiased_sampling_distortion", "obfuscation_coefficient_clip"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
         if not np.isfinite(self.mask_init) or not 0 <= self.mask_init <= 1:
@@ -97,9 +104,9 @@ class ExplainerConfig:
             raise ValueError("learning_rate and perturbation_size must be positive")
 
     def request_bound(self, repeats=1):
-        # Resampled objectives also reevaluate the previous best on this step's
-        # common noise batch; losses from different batches are not comparable.
-        probes = 2 * self.directions + 1 + int(self.resample_noise)
+        # Best selection reevaluates its candidate on the step's common noise
+        # batch. Author-code last selection does not need that extra objective.
+        probes = 2 * self.directions + 1 + int(self.resample_noise and self.mask_selection == "best")
         return repeats * (3 + self.noise_samples * (1 + probes * self.steps))
 
 
@@ -117,7 +124,7 @@ class Explanation:
 
 
 class BlackBoxShearletX:
-    """SPSA on a per-band spatial grid, shared across RGB channels.
+    """SPSA on full or grouped shearlet masks, shared across RGB channels.
 
     The VLM is queried with quantized PNG images. Coefficient noise is common
     within each finite-difference pair; optional paper settings resample that
@@ -130,8 +137,11 @@ class BlackBoxShearletX:
         self.config = config or ExplainerConfig()
         if self.config.fidelity_reference == "one" and scorer.mode == "log_margin":
             raise ValueError("fidelity_reference='one' requires probability or agreement")
+        if self.config.fidelity_loss == "one_minus_score" and scorer.mode == "log_margin":
+            raise ValueError("one_minus_score requires probability or agreement")
         if self.config.unbiased_sampling_distortion and (
-            scorer.mode != "agreement" or scorer.repeats < 2
+            scorer.mode != "agreement" or
+            (self.config.fidelity_loss == "squared_error" and scorer.repeats < 2)
         ):
             raise ValueError("unbiased_sampling_distortion requires agreement with repeats >=2")
         if self.config.noise_workers > 1 and getattr(scorer.backend, "thread_safe", True) is False:
@@ -139,23 +149,38 @@ class BlackBoxShearletX:
         if self.config.optimizer == "hybrid_adam" and not callable(getattr(transform, "decode_adjoint", None)):
             raise ValueError("hybrid_adam requires transform.decode_adjoint")
 
-    def _regularizer_gradient(self, mask, coeffs, y_index, x_index):
-        """Exact grid-mask gradient of the local mask and spatial penalties."""
+    def _expand_mask(self, mask, y_index=None, x_index=None):
+        """Add the shared RGB axis; full masks retain every coefficient entry."""
+        if self.config.mask_resolution == "full":
+            return mask[None]
+        return mask[:, y_index[:, None], x_index[None, :]][None]
+
+    def _regularizer_gradient(self, mask, coeffs, y_index=None, x_index=None):
+        """Exact full/grid-mask gradient of the local regularization penalties."""
         _, bands, height, width = coeffs.shape
-        grid = self.config.grid_size
-        cells = (y_index[:, None] * grid + x_index[None, :]).ravel()
-        areas = np.bincount(cells, minlength=grid * grid).reshape(grid, grid)
-        gradient = np.broadcast_to(
-            self.config.mask_weight * areas / (bands * height * width), mask.shape,
-        ).copy()
+        if self.config.mask_resolution == "full":
+            if mask.shape != (bands, height, width):
+                raise ValueError("full mask must have shape K,H,W matching the coefficients")
+            # Match torch.abs's zero subgradient for the author-code full mask.
+            gradient = self.config.mask_weight * np.sign(mask) / (bands * height * width)
+        else:
+            grid = self.config.grid_size
+            y_index = np.arange(height) * grid // height if y_index is None else y_index
+            x_index = np.arange(width) * grid // width if x_index is None else x_index
+            cells = (y_index[:, None] * grid + x_index[None, :]).ravel()
+            areas = np.bincount(cells, minlength=grid * grid).reshape(grid, grid)
+            gradient = np.broadcast_to(
+                self.config.mask_weight * areas / (bands * height * width), mask.shape,
+            ).copy()
         if self.config.spatial_weight == 0:
             return gradient
-        dense = mask[:, y_index[:, None], x_index[None, :]][None]
+        dense = self._expand_mask(mask, y_index, x_index)
         clean = self.transform.decode(coeffs * dense)
         if self.config.spatial_domain == "gray_clipped":
             gray = clean.mean(axis=-1)
+            upper_active = gray <= 1 if self.config.mask_resolution == "full" else gray < 1
             pixel_gradient = np.broadcast_to(
-                ((gray > 0) & (gray < 1))[:, :, None] / clean.size, clean.shape,
+                ((gray > 0) & upper_active)[:, :, None] / clean.size, clean.shape,
             )
         else:
             pixel_gradient = np.sign(clean) / clean.size
@@ -163,19 +188,28 @@ class BlackBoxShearletX:
         if coefficient_gradient.shape != coeffs.shape or not np.isfinite(coefficient_gradient).all():
             raise ValueError("decode_adjoint must return finite C,K,H,W coefficients")
         dense_gradient = np.sum(coeffs * coefficient_gradient, axis=0)
-        spatial_gradient = np.stack([
-            np.bincount(cells, weights=band.ravel(), minlength=grid * grid).reshape(grid, grid)
-            for band in dense_gradient
-        ])
+        if self.config.mask_resolution == "full":
+            spatial_gradient = dense_gradient
+        else:
+            spatial_gradient = np.stack([
+                np.bincount(cells, weights=band.ravel(), minlength=grid * grid).reshape(grid, grid)
+                for band in dense_gradient
+            ])
         return gradient + self.config.spatial_weight * spatial_gradient
 
-    def prepare_image(self, image):
-        """Validate the local transform before making an external prediction."""
-        x = np.asarray(image.convert("RGB"), dtype=np.float64) / 255
+    def prepare_image(self, image, *, pixels=None):
+        """Keep optional resized float pixels, validating their API image first."""
+        image = image.convert("RGB")
+        x = np.asarray(image, dtype=np.float64) / 255 if pixels is None else np.asarray(pixels, dtype=np.float64)
+        if (x.shape != (image.height, image.width, 3) or not np.isfinite(x).all()
+                or np.any((x < 0) | (x > 1))):
+            raise ValueError("input pixels must be finite H,W,3 values in [0,1] matching the image dimensions")
+        if to_image(x).tobytes() != image.tobytes():
+            raise ValueError("Float input pixels belong to a different API input image")
         coeffs = self.transform.encode(x)
         if coeffs.ndim != 4 or not np.isfinite(coeffs).all():
             raise ValueError("Transform must produce finite C,K,H,W coefficients")
-        if self.config.grid_size > min(coeffs.shape[-2:]):
+        if self.config.mask_resolution == "grid" and self.config.grid_size > min(coeffs.shape[-2:]):
             raise ValueError("grid_size cannot exceed image dimensions")
         round_trip = self.transform.decode(coeffs)
         if not np.allclose(round_trip, x, atol=1e-6, rtol=1e-6):
@@ -186,7 +220,7 @@ class BlackBoxShearletX:
                 progress: Callable[[dict], None] | None = None,
                 checkpoint: Callable[[np.ndarray, list[dict]], None] | None = None,
                 on_iteration: Callable[[np.ndarray, dict], None] | None = None) -> Explanation:
-        """Explain an image; checkpoints use the best mask, previews the current mask."""
+        """Explain an image; checkpoints follow selection, previews use current masks."""
         cfg = self.config
         repeats = self.scorer.repeats if self.scorer.mode == "agreement" else 1
         bound = cfg.request_bound(repeats)
@@ -194,7 +228,9 @@ class BlackBoxShearletX:
             raise ValueError(f"Run needs at most {bound} requests; max_requests={cfg.max_requests}")
         image = image.convert("RGB")
         x, coeffs, round_trip_error = representation or self.prepare_image(image)
-        if not np.array_equal(x, np.asarray(image, dtype=np.float64) / 255):
+        if (np.shape(x) != (image.height, image.width, 3) or not np.isfinite(x).all()
+                or np.any((x < 0) | (x > 1))
+                or to_image(x).tobytes() != image.tobytes()):
             raise ValueError("Prepared representation belongs to a different input image")
         _, bands, height, width = coeffs.shape
         requests = 0
@@ -218,7 +254,7 @@ class BlackBoxShearletX:
         if target not in reference.probabilities:
             raise ValueError(f"Unknown fixed target class: {target}")
         reference_score = reference.score(target)
-        fidelity_score = 1.0 if cfg.fidelity_reference == "one" else reference_score
+        fidelity_score = 1.0 if cfg.fidelity_reference == "one" or cfg.fidelity_loss == "one_minus_score" else reference_score
         rng = np.random.default_rng(cfg.seed)
         noise_coeffs = coeffs.mean(axis=0, keepdims=True) if cfg.noise_channels == "shared_gray" else coeffs
         mean = noise_coeffs.mean(axis=(-2, -1), keepdims=True)
@@ -241,14 +277,17 @@ class BlackBoxShearletX:
         x_index = np.arange(width) * cfg.grid_size // width
 
         def expand(mask):
-            return mask[:, y_index[:, None], x_index[None, :]][None]
+            return self._expand_mask(mask, y_index, x_index)
 
         def objective(mask):
             dense = expand(mask)
             clean = self.transform.decode(coeffs * dense)
             def sample_distortion(sample):
-                prediction = evaluate(self.transform.decode(coeffs * dense + (1 - dense) * sample))
-                if cfg.unbiased_sampling_distortion:
+                mixed_coefficients = coeffs * dense + (1 - dense) * sample
+                if cfg.obfuscation_coefficient_clip:
+                    mixed_coefficients = np.clip(mixed_coefficients, 0, 1)
+                prediction = evaluate(self.transform.decode(mixed_coefficients))
+                if cfg.unbiased_sampling_distortion or (cfg.fidelity_loss == "one_minus_score" and self.scorer.mode == "agreement"):
                     count = prediction.sample_counts.get(target)
                     samples = sum(prediction.sample_counts.values())
                     if count is None:
@@ -257,7 +296,11 @@ class BlackBoxShearletX:
                         count = round(count_float)
                         if not np.isclose(count_float, count, atol=1e-8, rtol=0):
                             raise ValueError("sampling probability does not correspond to an integer count")
+                    if cfg.fidelity_loss == "one_minus_score":
+                        return 1.0 - count / samples
                     return unbiased_squared_error(count, samples, fidelity_score)
+                if cfg.fidelity_loss == "one_minus_score":
+                    return 1.0 - prediction.score(target)
                 return (prediction.score(target) - fidelity_score) ** 2
 
             if cfg.noise_workers > 1:
@@ -273,7 +316,8 @@ class BlackBoxShearletX:
             return {"loss": float(loss), "distortion": float(distortion),
                     "mask_energy": mask_energy, "spatial_energy": spatial_energy}
 
-        mask = np.full((bands, cfg.grid_size, cfg.grid_size), cfg.mask_init, dtype=np.float64)
+        mask_shape = (bands, height, width) if cfg.mask_resolution == "full" else (bands, cfg.grid_size, cfg.grid_size)
+        mask = np.full(mask_shape, cfg.mask_init, dtype=np.float64)
         adam_mean, adam_variance = np.zeros_like(mask), np.zeros_like(mask)
         best_mask = mask.copy()
         best_step = 0
@@ -318,11 +362,15 @@ class BlackBoxShearletX:
                 rate = cfg.learning_rate / step ** 0.602
                 mask = np.clip(mask - rate * gradient, 0, 1)
             current = objective(mask)
-            if cfg.resample_noise:
-                best = objective(best_mask)
-            if current["loss"] < best["loss"]:
+            if cfg.mask_selection == "last":
                 best, best_mask = current, mask.copy()
                 best_step = step
+            else:
+                if cfg.resample_noise:
+                    best = objective(best_mask)
+                if current["loss"] < best["loss"]:
+                    best, best_mask = current, mask.copy()
+                    best_step = step
             record = dict(step=step, requests=requests, best_loss=best["loss"],
                           best_step=best_step, probe_distortions=probe_distortions,
                           estimated_gradient_norm=fidelity_gradient_norm,
@@ -350,10 +398,16 @@ class BlackBoxShearletX:
             target=target, reference=reference, retained=retained_result,
             removed=removed_result, history=history,
             diagnostics={"transform": self.transform.name,
-                         "optimization": "grouped_hybrid_adam" if cfg.optimizer == "hybrid_adam" else "grouped_spsa",
+                         "optimization": ("full_" if cfg.mask_resolution == "full" else "grouped_") + cfg.optimizer,
+                         "model_gradient": "black_box_spsa_estimate",
+                         "model_score_evidence": "sampled_label_frequency" if self.scorer.mode == "agreement" else "native_candidate_logprobs",
                          "finite_difference_denominator": "actual_clipped_probe_displacement" if cfg.optimizer == "hybrid_adam" else "symmetric_nominal_radius",
                          "requests": requests, "request_bound": bound,
                          "mask_parameters": int(best_mask.size), "coefficient_shape": list(coeffs.shape),
+                         "mask_resolution": cfg.mask_resolution, "mask_shape": list(best_mask.shape),
+                         "mask_selection": cfg.mask_selection,
+                         "obfuscation_coefficient_clip": cfg.obfuscation_coefficient_clip,
+                         "fidelity_loss": cfg.fidelity_loss,
                          "perturbation_directions": cfg.directions, "selected_step": best_step,
                          "mask_energy": best["mask_energy"], "spatial_energy": best["spatial_energy"],
                          "probability_drop_removed": before - removed_result.probabilities[target],

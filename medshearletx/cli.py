@@ -22,7 +22,7 @@ def build_parser():
     demo.add_argument("--output", default="output/demo")
     demo.add_argument("--transform", choices=["shearlet", "identity"], default="shearlet")
     imagenet = commands.add_parser("experiment", aliases=["imagenet"], help="Run a configured classification experiment")
-    imagenet.add_argument("--config", default="configs/vertex-imagenet.json")
+    imagenet.add_argument("--config", default="configs/vertex-afghan-imagenet-pilot.json")
     imagenet.add_argument("--root", default=".", help="Project root for paths in the config")
     imagenet.add_argument("--output", help="Defaults to runs/<run name>-<timestamp> under the project root")
     imagenet.add_argument("--dry-run", action="store_true")
@@ -110,3 +110,6 @@ def main(argv=None):
     except (ValueError, KeyError, OSError, ImportError, BackendRequestError, RequestBudgetExceeded) as exc:
         print(f"Error: {exc}")
         return 2
+    except KeyboardInterrupt:
+        print("Interrupted; saved progress remains in the run directory.")
+        return 130

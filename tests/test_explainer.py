@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 from medshearletx.backends import MockBackend
-from medshearletx.explainer import BlackBoxShearletX, ExplainerConfig, clipped_spsa_gradient, unbiased_squared_error
+from medshearletx.explainer import BlackBoxShearletX, ExplainerConfig, clipped_spsa_gradient, to_image, unbiased_squared_error
 from medshearletx.scoring import Scorer
 from medshearletx.transforms import IdentityTransform, ShearletTransform
 from medshearletx.types import ClassificationTask, Prediction
@@ -47,6 +47,151 @@ class ExplainerTests(unittest.TestCase):
         self.assertLess(previews[-1][0].mean(), checkpoints[-1].mean())
         np.testing.assert_array_equal(result.mask, checkpoints[-1])
         self.assertEqual(result.diagnostics["selected_step"], 0)
+
+    def test_last_selection_checkpoints_current_mask_and_skips_best_reevaluation(self):
+        class CandidateFailure(ConstantBackend):
+            calls = 0
+
+            def predict(self, *args, **kwargs):
+                self.calls += 1
+                probability = 0.1 if self.calls == 5 else 0.8
+                return Prediction(label_logprobs={"bright": math.log(probability),
+                                                 "dark": math.log(1 - probability)})
+
+        results = {}
+        for policy in ("best", "last"):
+            scorer = Scorer(CandidateFailure(), self.scorer.task)
+            config = ExplainerConfig(steps=1, grid_size=2, mask_init=1, optimizer="hybrid_adam",
+                                    mask_weight=1, spatial_weight=0, resample_noise=True,
+                                    mask_selection=policy)
+            previews, checkpoints = [], []
+            result = BlackBoxShearletX(scorer, IdentityTransform(), config).explain(
+                self.image, on_iteration=lambda mask, row: previews.append(mask),
+                checkpoint=lambda mask, history: checkpoints.append(mask))
+            self.assertEqual(scorer.requests, config.request_bound())
+            np.testing.assert_array_equal(result.mask, checkpoints[-1])
+            if policy == "last":
+                np.testing.assert_array_equal(result.mask, previews[-1])
+                self.assertEqual(result.diagnostics["selected_step"], 1)
+                self.assertGreater(result.history[-1]["loss"], result.history[0]["loss"])
+            else:
+                np.testing.assert_array_equal(result.mask, checkpoints[0])
+                self.assertEqual(result.diagnostics["selected_step"], 0)
+            results[policy] = result
+        self.assertLess(results["last"].mask.mean(), results["best"].mask.mean())
+        self.assertEqual(results["best"].diagnostics["requests"] - results["last"].diagnostics["requests"], 1)
+
+    def test_full_mask_keeps_independent_pixel_entries_without_block_expansion(self):
+        full = BlackBoxShearletX(self.scorer, IdentityTransform(),
+                                ExplainerConfig(mask_resolution="full", grid_size=2))
+        coefficients = np.ones((3, 1, 5, 7))
+        mask = np.zeros((1, 5, 7))
+        mask[0, 2, 3] = 1
+        reconstruction = full.transform.decode(coefficients * full._expand_mask(mask))
+        self.assertEqual(np.count_nonzero(reconstruction[:, :, 0]), 1)
+        np.testing.assert_array_equal(reconstruction[2, 3], np.ones(3))
+        grid = BlackBoxShearletX(self.scorer, IdentityTransform(), ExplainerConfig(grid_size=2))
+        coarse = np.zeros((1, 2, 2))
+        coarse[0, 0, 0] = 1
+        indices = np.arange(5) * 2 // 5, np.arange(7) * 2 // 7
+        coarse_image = grid.transform.decode(coefficients * grid._expand_mask(coarse, *indices))
+        self.assertEqual(np.count_nonzero(coarse_image[:, :, 0]), 12)
+
+    def test_full_geometry_and_last_multiple_direction_budget(self):
+        scorer = Scorer(ConstantBackend(), self.scorer.task, mode="agreement", repeats=2)
+        config = ExplainerConfig(steps=2, grid_size=999, mask_resolution="full", directions=2,
+                                noise_samples=2, resample_noise=True, mask_selection="last",
+                                optimizer="hybrid_adam", max_requests=100)
+        expected = 2 * (3 + 2 * (1 + 5 * 2))
+        self.assertEqual(config.request_bound(2), expected)
+        result = BlackBoxShearletX(scorer, IdentityTransform(), config).explain(self.image)
+        self.assertEqual(result.mask.shape, (1, 32, 32))
+        self.assertEqual(result.diagnostics["mask_parameters"], 1024)
+        self.assertEqual(result.diagnostics["mask_shape"], [1, 32, 32])
+        self.assertEqual(result.diagnostics["mask_resolution"], "full")
+        self.assertEqual(result.diagnostics["optimization"], "full_hybrid_adam")
+        self.assertEqual(result.diagnostics["model_gradient"], "black_box_spsa_estimate")
+        self.assertEqual(result.diagnostics["model_score_evidence"], "sampled_label_frequency")
+        self.assertEqual(result.diagnostics["selected_step"], config.steps)
+        self.assertEqual(scorer.requests, expected)
+
+    def test_float_preprocessing_pixels_survive_until_api_quantization(self):
+        pixels = np.asarray(self.image, dtype=np.float64) / 255 + 0.001
+        explainer = BlackBoxShearletX(self.scorer, IdentityTransform(),
+                                     ExplainerConfig(steps=0, mask_resolution="full"))
+        representation = explainer.prepare_image(self.image, pixels=pixels)
+        np.testing.assert_array_equal(representation[0], pixels)
+        self.assertFalse(np.array_equal(representation[0], np.asarray(self.image) / 255))
+        self.assertEqual(to_image(pixels).tobytes(), self.image.tobytes())
+        result = explainer.explain(self.image, representation=representation)
+        self.assertEqual(result.diagnostics["round_trip_max_error"], 0)
+        requests_before = self.scorer.requests
+        with self.assertRaisesRegex(ValueError, "different API"):
+            explainer.prepare_image(self.image, pixels=pixels + 0.01)
+        with self.assertRaisesRegex(ValueError, "different input"):
+            explainer.explain(self.image, representation=(pixels + 0.01, *representation[1:]))
+        for bad in (np.full(pixels.shape, np.nan), pixels[:, :, :1], np.ones_like(pixels) * 2):
+            with self.assertRaisesRegex(ValueError, "input pixels"):
+                explainer.prepare_image(self.image, pixels=bad)
+        self.assertEqual(self.scorer.requests, requests_before)
+
+    def test_obfuscation_coefficients_are_clipped_before_synthesis_only(self):
+        class SignedTransform(IdentityTransform):
+            def encode(self, image):
+                channels = np.asarray(image).transpose(2, 0, 1)
+                return np.stack((2 * channels, -channels), axis=1)
+
+            def decode(self, coefficients):
+                return coefficients.sum(axis=1).transpose(1, 2, 0)
+
+        class RecordingScorer(Scorer):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.images = []
+
+            def evaluate(self, image):
+                self.images.append(np.asarray(image).copy())
+                return super().evaluate(image)
+
+        image = Image.fromarray(np.tile(np.array([51, 204], dtype=np.uint8)[None, :, None], (4, 1, 3)))
+        for clipped in (False, True):
+            scorer = RecordingScorer(ConstantBackend(), self.scorer.task)
+            config = ExplainerConfig(steps=0, mask_resolution="full", mask_init=1, noise="zeros",
+                                    obfuscation_coefficient_clip=clipped)
+            result = BlackBoxShearletX(scorer, SignedTransform(), config).explain(image)
+            expected = np.tile(np.array([102, 255] if clipped else [51, 204], dtype=np.uint8)[None, :, None], (4, 1, 3))
+            np.testing.assert_array_equal(scorer.images[1], expected)
+            np.testing.assert_array_equal(np.asarray(result.image), np.asarray(image))
+            self.assertIs(result.diagnostics["obfuscation_coefficient_clip"], clipped)
+
+    def test_one_minus_sample_frequency_is_unbiased_even_with_one_sample(self):
+        for samples in (1, 2, 4):
+            estimates = []
+            for count in range(samples + 1):
+                class CountBackend:
+                    def __init__(self):
+                        self.calls = 0
+
+                    def predict(self, *args, **kwargs):
+                        label = "bright" if self.calls % samples < count else "dark"
+                        self.calls += 1
+                        return Prediction(sampled_label=label)
+
+                scorer = Scorer(CountBackend(), self.scorer.task, mode="agreement", repeats=samples)
+                config = ExplainerConfig(steps=0, fidelity_loss="one_minus_score",
+                                        unbiased_sampling_distortion=True)
+                result = BlackBoxShearletX(scorer, IdentityTransform(), config).explain(self.image, target="bright")
+                estimates.append(result.history[0]["distortion"])
+                self.assertAlmostEqual(estimates[-1], 1 - count / samples)
+                self.assertEqual(result.diagnostics["fidelity_reference_score"], 1)
+            for probability in (0, 0.2, 0.6, 1):
+                expectation = sum(math.comb(samples, k) * probability ** k * (1 - probability) ** (samples-k)
+                                  * estimates[k] for k in range(samples + 1))
+                self.assertAlmostEqual(expectation, 1 - probability)
+        native = Scorer(ConstantBackend(), self.scorer.task)
+        result = BlackBoxShearletX(native, IdentityTransform(),
+                                  ExplainerConfig(steps=0, fidelity_loss="one_minus_score")).explain(self.image)
+        self.assertAlmostEqual(result.history[0]["distortion"], 0.2)
 
     def test_multiple_directions_budget_counts_each_probe_and_rejects_before_calls(self):
         scorer = Scorer(ConstantBackend(), ClassificationTask(("bright", "dark"), "Is it bright?"),
@@ -166,7 +311,9 @@ class ExplainerTests(unittest.TestCase):
         for options in ({"fidelity_reference": "bad"}, {"noise_channels": "bad"},
                         {"spatial_domain": "bad"}, {"resample_noise": 1},
                         {"normalize_final": 1}, {"unbiased_sampling_distortion": 1},
-                        {"noise_workers": 0}, {"noise_workers": 17}, {"noise_workers": True}):
+                        {"noise_workers": 0}, {"noise_workers": 17}, {"noise_workers": True},
+                        {"mask_resolution": "bilinear"}, {"mask_selection": "bad"},
+                        {"fidelity_loss": "bad"}, {"obfuscation_coefficient_clip": 1}):
             with self.assertRaises(ValueError):
                 ExplainerConfig(**options)
         with self.assertRaisesRegex(ValueError, "agreement"):
@@ -253,6 +400,40 @@ class ExplainerTests(unittest.TestCase):
                 expected[index] = (regularizer(plus) - regularizer(minus)) / 2e-6
             np.testing.assert_allclose(actual, expected, atol=1e-9)
 
+    def test_full_regularizer_gradient_matches_pixelwise_finite_difference(self):
+        rng = np.random.default_rng(10)
+        coefficients = rng.normal(size=(3, 1, 5, 7))
+        mask = rng.uniform(0.3, 0.8, (1, 5, 7))
+        for domain in ("rgb_raw", "gray_clipped"):
+            config = ExplainerConfig(mask_resolution="full", optimizer="hybrid_adam", mask_weight=0.7,
+                                    spatial_weight=1.2, spatial_domain=domain)
+            explainer = BlackBoxShearletX(self.scorer, IdentityTransform(), config)
+            actual = explainer._regularizer_gradient(mask, coefficients)
+
+            def regularizer(candidate):
+                clean = explainer.transform.decode(coefficients * candidate[None])
+                spatial = np.clip(clean.mean(axis=-1), 0, 1) if domain == "gray_clipped" else clean
+                return config.mask_weight * np.mean(np.abs(candidate)) + config.spatial_weight * np.mean(np.abs(spatial))
+
+            expected = np.empty_like(mask)
+            for index in np.ndindex(mask.shape):
+                plus, minus = mask.copy(), mask.copy()
+                plus[index] += 1e-6
+                minus[index] -= 1e-6
+                expected[index] = (regularizer(plus) - regularizer(minus)) / 2e-6
+            np.testing.assert_allclose(actual, expected, atol=1e-9)
+
+    def test_full_regularizer_matches_author_subgradients_at_zero_and_clip_boundary(self):
+        mask = np.array([[[0., 0.5, 1., 1., 1.]]])
+        coefficients = np.tile(np.array([1., 1., 1., 2., -1.])[None, None, None], (3, 1, 1, 1))
+        for mask_weight, spatial_weight, expected in (
+                (1, 0, [0., 0.2, 0.2, 0.2, 0.2]),
+                (0, 1, [0., 0.2, 0.2, 0., 0.])):
+            config = ExplainerConfig(mask_resolution="full", optimizer="hybrid_adam", spatial_domain="gray_clipped",
+                                    mask_weight=mask_weight, spatial_weight=spatial_weight)
+            gradient = BlackBoxShearletX(self.scorer, IdentityTransform(), config)._regularizer_gradient(mask, coefficients)
+            np.testing.assert_allclose(gradient.ravel(), expected, atol=1e-15)
+
     def test_hybrid_adam_changes_mask_and_requires_adjoint_before_calls(self):
         scorer = Scorer(ConstantBackend(), self.scorer.task)
         config = ExplainerConfig(steps=2, grid_size=2, mask_init=1, optimizer="hybrid_adam",
@@ -304,6 +485,22 @@ class ExplainerTests(unittest.TestCase):
         self.assertEqual(coefficients.shape[:2], (3, 17))
         self.assertTrue(np.any(coefficients < 0))
         np.testing.assert_allclose(transform.decode(coefficients), pixels, atol=1e-10)
+        config = ExplainerConfig(mask_resolution="full", optimizer="hybrid_adam", mask_weight=0.7,
+                                spatial_weight=1.2, spatial_domain="gray_clipped")
+        explainer = BlackBoxShearletX(self.scorer, transform, config)
+        rng = np.random.default_rng(27)
+        mask = rng.uniform(0.3, 0.7, coefficients.shape[1:])
+        direction = rng.normal(size=mask.shape)
+        direction /= np.linalg.norm(direction)
+        gradient = explainer._regularizer_gradient(mask, coefficients)
+
+        def regularizer(candidate):
+            clean = transform.decode(coefficients * candidate[None])
+            return 0.7 * np.mean(np.abs(candidate)) + 1.2 * np.mean(np.clip(clean.mean(axis=-1), 0, 1))
+
+        epsilon = 1e-3
+        expected = (regularizer(mask + epsilon * direction) - regularizer(mask - epsilon * direction)) / (2 * epsilon)
+        self.assertAlmostEqual(float(np.sum(gradient * direction)), expected, places=9)
         self.assertIs(utility.dfilters, original_filter)
         with self.assertRaisesRegex(ValueError, "square"):
             transform.encode(np.zeros((128, 64, 3)))

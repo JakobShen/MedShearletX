@@ -11,14 +11,7 @@
     }
   },
   "task": {
-    "labels": [
-      "Afghan hound",
-      "beagle",
-      "golden retriever",
-      "English foxhound",
-      "bulldog"
-    ],
-    "question": "What dog breed is visible in this image? Classify it using the complete candidate set."
+    "imagenet_labels_path": "code/imagenet_utils/imagenet_labels.py"
   },
   "image_path": "code/imgs/ILSVRC2012_val_00017625.JPEG",
   "image_size": 256,
@@ -41,7 +34,7 @@
     "backoff_seconds": 0.5
   },
   "explainer": {
-    "steps": 150,
+    "steps": 8,
     "learning_rate": 0.1,
     "perturbation_size": 0.1,
     "mask_init": 1.0,
@@ -59,22 +52,22 @@
     "normalize_final": true,
     "unbiased_sampling_distortion": true,
     "optimizer": "hybrid_adam",
-    "max_requests": 14500,
+    "max_requests": 1300,
     "directions": 1,
     "mask_resolution": "full",
     "mask_selection": "last",
     "obfuscation_coefficient_clip": true,
     "fidelity_loss": "squared_error"
   },
-  "max_total_requests": 15000,
-  "run_name": "vertex-afghan-fiveway-full",
+  "max_total_requests": 1600,
+  "run_name": "vertex-afghan-imagenet-full-pilot",
   "sample_id": "imagenet_afghan_hound_00017625",
   "image_metadata": {
     "source": "original repository ImageNet JPEG",
     "example_breed": "Afghan hound",
     "label_source": "upstream notebook example, not independently adjudicated"
   },
-  "run_role": "released_code_reference_with_API_score_and_gradient",
+  "run_role": "eight_step_structure_validation_not_convergence",
   "protocol_reference": "released Afghan notebook and code/shearletx.py",
   "reference_steps": 150,
   "resize_filter": "tensor_bilinear"

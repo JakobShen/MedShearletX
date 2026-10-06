@@ -31,7 +31,7 @@ class StepVisualizer:
     """
 
     def __init__(self, output_dir, input_image, transform, coefficients, *,
-                 model, target_label, normalize_final, grid_size):
+                 model, target_label, normalize_final, grid_size, mask_resolution="grid"):
         if not isinstance(input_image, Image.Image):
             raise TypeError("input_image must be a PIL image")
         self.output = Path(output_dir).expanduser().resolve()
@@ -43,13 +43,20 @@ class StepVisualizer:
         channels, self.bands, height, width = self.coefficients.shape
         if channels != 3 or self.input_image.size != (width, height):
             raise ValueError("coefficients and RGB input image dimensions must agree")
-        if type(grid_size) is not int or not 1 <= grid_size <= min(height, width):
+        if mask_resolution not in {"grid", "full"}:
+            raise ValueError("mask_resolution must be grid or full")
+        if type(grid_size) is not int or grid_size < 1 or (
+            mask_resolution == "grid" and grid_size > min(height, width)
+        ):
             raise ValueError("grid_size must be a positive integer within image dimensions")
         if type(normalize_final) is not bool:
             raise ValueError("normalize_final must be a boolean")
         self.grid_size, self.normalize_final = grid_size, normalize_final
-        self.y_index = np.arange(height) * grid_size // height
-        self.x_index = np.arange(width) * grid_size // width
+        self.mask_resolution = mask_resolution
+        self.mask_shape = (self.bands, height, width) if mask_resolution == "full" else (self.bands, grid_size, grid_size)
+        if mask_resolution == "grid":
+            self.y_index = np.arange(height) * grid_size // height
+            self.x_index = np.arange(width) * grid_size // width
         self.model, self.target_label = str(model), str(target_label)
         self.records = {}
         self.final_summary = None
@@ -61,11 +68,11 @@ class StepVisualizer:
         if type(step) is not int or step < 0:
             raise ValueError("history must contain a nonnegative integer step")
         mask = np.asarray(mask)
-        if mask.shape != (self.bands, self.grid_size, self.grid_size) or not np.isfinite(mask).all():
-            raise ValueError("mask must be finite band,grid,grid with the configured dimensions")
+        if mask.shape != self.mask_shape or not np.isfinite(mask).all():
+            raise ValueError(f"mask must be finite with configured {self.mask_resolution} dimensions {self.mask_shape}")
         if np.any((mask < 0) | (mask > 1)):
             raise ValueError("mask values must be in [0,1]")
-        dense = mask[:, self.y_index[:, None], self.x_index[None, :]][None]
+        dense = mask[None] if self.mask_resolution == "full" else mask[:, self.y_index[:, None], self.x_index[None, :]][None]
         kept = np.clip(self.transform.decode(self.coefficients * dense), 0, 1)
         if self.normalize_final and kept.max() > 0:
             kept = kept / kept.max()
@@ -106,6 +113,7 @@ class StepVisualizer:
 
     def _write_index(self):
         data = {"model": self.model, "target_label": self.target_label,
+                "mask_resolution": self.mask_resolution,
                 "note": "Current-iteration previews; displayed images have no per-step VLM evaluation.",
                 "steps": [self.records[key] for key in sorted(self.records)]}
         if self.final_summary is not None:

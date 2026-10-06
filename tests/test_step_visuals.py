@@ -97,6 +97,30 @@ class StepVisualTests(unittest.TestCase):
             self.assertIn("may differ from the last iteration preview", page)
             self.assertIn("comparison.png", page)
 
+    @patch("medshearletx.scoring.Scorer.evaluate", side_effect=AssertionError("unexpected model scoring"))
+    def test_full_mask_keeps_independent_pixel_values_without_block_expansion(self, scorer_call):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pixels = np.full((16, 16, 3), 200, dtype=np.uint8)
+            image = Image.fromarray(pixels)
+            transform = IdentityTransform()
+            visualizer = StepVisualizer(root, image, transform, transform.encode(pixels / 255),
+                                        model="test", target_label="dog", normalize_final=False,
+                                        grid_size=2, mask_resolution="full")
+            mask = np.ones((1, 16, 16))
+            mask[0, 0, 0], mask[0, 0, 1], mask[0, 1, 0] = 0.25, 0.5, 0.75
+            visualizer(mask, {"step": 1, "loss": 0.4})
+            self.assertEqual(np.load(root / "masks/step001.npy").shape, (1, 16, 16))
+            with Image.open(root / "images/f_n/step001.png") as kept:
+                self.assertEqual(kept.getpixel((0, 0)), (50, 50, 50))
+                self.assertEqual(kept.getpixel((1, 0)), (100, 100, 100))
+                self.assertEqual(kept.getpixel((0, 1)), (150, 150, 150))
+                self.assertEqual(kept.getpixel((1, 1)), (200, 200, 200))
+            with Image.open(root / "input.png") as original:
+                np.testing.assert_array_equal(np.asarray(original), pixels)
+            self.assertEqual(json.loads((root / "metrics.json").read_text())["mask_resolution"], "full")
+            scorer_call.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,7 @@ from PIL import Image, ImageOps
 
 from .backends import BackendRequestError, create_backend
 from .data import ImageDataset
-from .explainer import BlackBoxShearletX, ExplainerConfig
+from .explainer import BlackBoxShearletX, ExplainerConfig, to_image
 from .scoring import Scorer
 from .tasks import load_task
 from .transforms import create_transform
@@ -42,28 +42,80 @@ def prepare(config, scores=None):
     if type(config.get("step_visuals", True)) is not bool:
         raise ValueError("step_visuals must be a boolean")
     size = config.get("image_size", 128)
-    if type(size) is not int or size < 16 or optimizer.grid_size > size:
+    if type(size) is not int or size < 16 or (optimizer.mask_resolution == "grid" and optimizer.grid_size > size):
         raise ValueError("image_size must be an integer >=16 and >= grid_size")
     if config.get("resize_mode", "letterbox") not in {"letterbox", "stretch"}:
         raise ValueError("resize_mode must be letterbox or stretch")
+    if config.get("resize_filter", "lanczos") not in {"lanczos", "tensor_bilinear"}:
+        raise ValueError("resize_filter must be lanczos or tensor_bilinear")
     if type(config.get("pad_value", 0)) is not int or not 0 <= config.get("pad_value", 0) <= 255:
         raise ValueError("pad_value must be an integer in [0,255]")
     return task, scorers, optimizer
 
 
-def preprocess(image, config):
-    """Aspect-preserving square input by default; record the exact policy."""
+def _tensor_bilinear(pixels, width, height):
+    """Tensor Resize coordinates: align_corners=False, antialias=False."""
+    source_height, source_width = pixels.shape[:2]
+    x = np.clip((np.arange(width) + 0.5) * source_width / width - 0.5, 0, source_width - 1)
+    y = np.clip((np.arange(height) + 0.5) * source_height / height - 0.5, 0, source_height - 1)
+    x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+    x1, y1 = np.minimum(x0 + 1, source_width - 1), np.minimum(y0 + 1, source_height - 1)
+    wx = (x - x0).astype(np.float32)[None, :, None]
+    wy = (y - y0).astype(np.float32)[:, None, None]
+    top = pixels[y0[:, None], x0[None, :]] * (1 - wx) + pixels[y0[:, None], x1[None, :]] * wx
+    bottom = pixels[y1[:, None], x0[None, :]] * (1 - wx) + pixels[y1[:, None], x1[None, :]] * wx
+    return top * (1 - wy) + bottom * wy
+
+
+def _preprocessed_pixels(image, config):
     size = config.get("image_size", 128)
     mode = config.get("resize_mode", "letterbox")
+    resize_filter = config.get("resize_filter", "lanczos")
+    if type(size) is not int or size < 1:
+        raise ValueError("image_size must be a positive integer")
+    if mode not in {"letterbox", "stretch"}:
+        raise ValueError("resize_mode must be letterbox or stretch")
+    if resize_filter not in {"lanczos", "tensor_bilinear"}:
+        raise ValueError("resize_filter must be lanczos or tensor_bilinear")
+    image = image.convert("RGB")
+    if resize_filter == "tensor_bilinear":
+        pixels = np.asarray(image, dtype=np.float32) / 255
+        metadata = {"mode": mode, "size": size, "resampling": "tensor_bilinear",
+                    "align_corners": False, "antialias": False, "tensor_dtype": "float32"}
+        if mode == "stretch":
+            return _tensor_bilinear(pixels, size, size), metadata
+        scale = min(size / image.width, size / image.height)
+        width, height = max(1, round(image.width * scale)), max(1, round(image.height * scale))
+        fitted = _tensor_bilinear(pixels, width, height)
+        offset = ((size - width) // 2, (size - height) // 2)
+        value = config.get("pad_value", 0)
+        square = np.full((size, size, 3), value / 255, dtype=np.float32)
+        square[offset[1]:offset[1] + height, offset[0]:offset[0] + width] = fitted
+        metadata.update(fitted_size=[width, height], offset=list(offset), pad_value=value)
+        return square, metadata
     if mode == "stretch":
-        return image.resize((size, size), Image.Resampling.LANCZOS), {"mode": mode, "size": size}
+        resized = image.resize((size, size), Image.Resampling.LANCZOS)
+        return np.asarray(resized, dtype=np.float64) / 255, {"mode": mode, "size": size}
     fitted = ImageOps.contain(image, (size, size), Image.Resampling.LANCZOS)
     offset = ((size - fitted.width) // 2, (size - fitted.height) // 2)
     value = config.get("pad_value", 0)
     square = Image.new("RGB", (size, size), (value, value, value))
     square.paste(fitted, offset)
-    return square, {"mode": mode, "size": size, "fitted_size": list(fitted.size),
-                    "offset": list(offset), "pad_value": value, "resampling": "Lanczos"}
+    return np.asarray(square, dtype=np.float64) / 255, {"mode": mode, "size": size, "fitted_size": list(fitted.size),
+                                                    "offset": list(offset), "pad_value": value, "resampling": "Lanczos"}
+
+
+def preprocess_pixels(image, config):
+    """Return float RGB pixels; the tensor policy keeps interpolation fractions."""
+    return _preprocessed_pixels(image, config)[0]
+
+
+def preprocess(image, config):
+    """Return the exact quantized API/display image and preprocessing metadata."""
+    pixels, metadata = _preprocessed_pixels(image, config)
+    # Transform preparation promotes to float64. Quantize the same values here;
+    # float32 multiplication can otherwise round an exact half pixel differently.
+    return to_image(pixels.astype(np.float64)), metadata
 
 
 def plan_run(config, dataset, limit=1, scores=None, probe=False):
@@ -109,12 +161,15 @@ def run(config, dataset: ImageDataset, output, *, limit=1, scores=None,
     for index, sample in enumerate(dataset[:plan["images"]]):
         original = dataset.load(sample)
         image, preprocessing = preprocess(original, config)
+        pixels = preprocess_pixels(original, config) if config.get("resize_filter") == "tensor_bilinear" else None
         representation = None
         if not probe:
-            representation = BlackBoxShearletX(next(iter(scorers.values())), transform, optimizer).prepare_image(image)
+            representation = BlackBoxShearletX(next(iter(scorers.values())), transform, optimizer).prepare_image(image, pixels=pixels)
         folder = output / f"{index:04d}"
         folder.mkdir()
         image.save(folder / "input.png")
+        if pixels is not None:
+            np.save(folder / "input_tensor.npy", pixels)
         native_reference = None
         fixed_target = target
         for mode, scorer in scorers.items():
@@ -155,6 +210,7 @@ def run(config, dataset: ImageDataset, output, *, limit=1, scores=None,
                                 model=config["model"].get("model", getattr(scorer.backend, "model", mode)),
                                 target_label=fixed_target, normalize_final=optimizer.normalize_final,
                                 grid_size=optimizer.grid_size,
+                                mask_resolution=optimizer.mask_resolution,
                             )
                     explanation = BlackBoxShearletX(scorer, transform, optimizer).explain(
                         image, fixed_target, reference=reference, representation=representation,

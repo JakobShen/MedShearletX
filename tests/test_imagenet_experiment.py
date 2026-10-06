@@ -17,6 +17,7 @@ from PIL import Image
 
 from medshearletx.backends import MockBackend
 from medshearletx.cli import main
+from medshearletx.explainer import to_image
 from medshearletx.imagenet_experiment import prepare_experiment, run_experiment
 from medshearletx.tasks import load_imagenet_task
 
@@ -268,6 +269,55 @@ class ImageNetExperimentTests(unittest.TestCase):
                 self.assertEqual(destination.parent, self.root / "runs")
                 self.assertRegex(destination.name, r"^afghan-five-\d{8}-\d{6}$")
             self.assertFalse(destination.exists())
+
+    def test_full_mask_experiment_retains_float_resize_and_last_step_without_extra_calls(self):
+        config = json.loads(json.dumps(self.config))
+        config["task"] = {"labels": ["bright", "dark"]}
+        del config["labels_path"]
+        config["resize_filter"] = "tensor_bilinear"
+        config["explainer"].update(steps=1, mask_init=1, mask_resolution="full",
+                                    mask_selection="last", resample_noise=True, max_requests=14)
+        config["max_total_requests"] = 28
+        source = np.repeat(np.array([[0, 100], [200, 255]], dtype=np.uint8)[..., None], 3, axis=2)
+        Image.fromarray(source).save(self.root / "image.png")
+        backend = UsageMockBackend()
+        output = self.root / "full-mask-experiment"
+        with patch("medshearletx.imagenet_experiment.create_backend", return_value=backend):
+            result = run_experiment(config, self.root, output, progress=lambda message: None)
+        self.assertEqual(result["request_bound"], 28)
+        self.assertEqual(result["requests"], 26)
+        self.assertEqual(len(backend.calls), 26)
+        self.assertEqual(result["optimization_diagnostics"]["selected_step"], 1)
+        self.assertEqual(result["optimization_diagnostics"]["mask_resolution"], "full")
+        tensor = np.load(output / "input_tensor.npy")
+        self.assertEqual(tensor.dtype, np.float32)
+        self.assertTrue(np.any(abs(tensor * 255 - np.rint(tensor * 255)) > 0.1))
+        with Image.open(output / "input.png") as image:
+            self.assertEqual(image.tobytes(), to_image(tensor.astype(np.float64)).tobytes())
+        mask = np.load(output / "mask.npy")
+        self.assertEqual(mask.shape, (1, 16, 16))
+        expected = to_image(tensor * mask[0, ..., None])
+        for path in ("retained.png", "images/f_n/step001.png"):
+            with Image.open(output / path) as image:
+                self.assertEqual(image.tobytes(), expected.tobytes())
+
+    def test_keyboard_interrupt_preserves_checkpoint_and_records_interrupted_status(self):
+        output = self.root / "interrupted"
+
+        def interrupted_run(config, root, directory, progress):
+            directory.mkdir()
+            (directory / "plan.json").write_text("{}")
+            np.save(directory / "checkpoint-mask.npy", np.array([[[0.25]]]))
+            raise KeyboardInterrupt()
+
+        with patch("medshearletx.imagenet_experiment._run_experiment", side_effect=interrupted_run):
+            with self.assertRaises(KeyboardInterrupt):
+                run_experiment(self.config, self.root, output)
+        failure = self._read(output / "failure.json")
+        self.assertEqual(failure["status"], "interrupted")
+        self.assertEqual(failure["error_type"], "KeyboardInterrupt")
+        self.assertTrue(failure["checkpoint_available"])
+        np.testing.assert_array_equal(np.load(output / "checkpoint-mask.npy"), [[[0.25]]])
 
     @staticmethod
     def _counts(records, task):
