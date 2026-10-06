@@ -117,3 +117,23 @@ Dry run 检查类别、数据、配置和预算。实际运行要求 output dire
 `medshearletx.figures.save_explanation_figure` 直接排版输入与解释的 PIL image，输出 `explanation.png`、`comparison.png` 及对应 PDF。单图使用白色页边与 serif 标题，黑色图像区域来自实际重建像素；comparison 同时呈现原图和解释图。
 
 采样实验标题写作 `Retained sampling frequency: XX.XX%`，脚注给出固定目标、计数与区间、黑盒近似说明。只有确实测量了 native class probability 的实验才允许使用 `Retained probability`。图中的百分比必须来自保存的结果，不能复用论文截图或模型自己输出的信心。
+
+## 2026-10-06 实测结果
+
+实际模型为 Vertex `gemini-3.5-flash-lite`。全部 1000 类参与每次分类，最终固定目标为 **166: Walker hound, Walker foxhound**，与论文图的参考类别 **167: English foxhound** 不同。64 次目标选择中 Walker foxhound 有 40 次；下表使用独立于选择和优化的验证样本。
+
+| 验证输入 | Walker foxhound 回答 | 目标类频率 | 95% Wilson interval |
+| --- | --- | --- | --- |
+| 原图 | 94 / 128 | 73.44% | 65.18–80.32% |
+| 保留图 | 87 / 128 | 67.97% | 59.46–75.43% |
+| 移除图 | 17 / 128 | 13.28% | 8.46–20.24% |
+
+固定目标的频率保留率为 `(87/128)/(94/128) = 92.55%`。移除图的 128 次回答中，92 次为 beagle、19 次为 English foxhound、17 次为 Walker foxhound；目标品种的频率下降，狗本身仍可被识别。保留率不是“分类有 92.55% 的把握”。两个频率的区间重叠，也不能把 7 次回答的差异当成确定的性能损失。
+
+![Gemini 实际原图与解释图](assets/gemini35-imagenet-20261006/comparison.png)
+
+本轮实际完成 **1420 次调用**，无失败、无重试，耗时约 7.7 分钟。mask 平均权重为 0.675；这表示软权重均值，不是保留像素面积或非零系数比例。图像没有原论文那样稀疏，30 步预实验不能支持收敛或最小解释结论。论文的 37.29% 使用另一分类器及 native probability，与当前采样频率、预测类别和 mask 不能作数值优劣比较。
+
+完整采样结果保存在本地 `output/gemini35-imagenet-20261006-02/`；[可共享证据摘要](results/gemini35-imagenet-20261006.json) 和实际 PNG/PDF、输入图、保留/移除图、mask 已纳入仓库。原始 optimization diagnostics 包含每张仅 2 次采样的便宜预览，不能替代上表与最终图所用的 128 次验证估计。运行代码对应 commit `2adf84e`。
+
+此前一次 prototype 在第 29 步连接失败，1120 次尝试中 1119 次成功；结果日志单独保留。另有 native 能力检查、单次采样检查及一次未成功保存的 64 次采样检查。总尝试数与这些失败实验均在证据摘要中明确列出，没有挑选 prototype 的有利数值作为最终结论。

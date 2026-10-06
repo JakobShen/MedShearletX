@@ -101,6 +101,14 @@ deployment, so the figures show **retained sampling frequency**, with counts and
 Wilson intervals. Thirty optimization steps and a coarse grid are explicitly
 recorded; this is an API adaptation, not a complete 150/300-step replication.
 
+The [measured first run](docs/results/gemini35-imagenet-20261006.json) predicted
+Walker foxhound, with target responses of **94/128** on the original image,
+**87/128** on the retained image and **17/128** on the removed image. The retained
+frequency ratio is **92.55%**; it is not confidence in classification correctness.
+The resulting mask is less sparse than the paper figure.
+
+![Measured Gemini ImageNet explanation](docs/assets/gemini35-imagenet-20261006/comparison.png)
+
 Target selection, optimization and final evaluation use separate samples. Every
 provider attempt is recorded in `requests.jsonl` before downstream processing,
 including image/prompt hashes, generated labels and token usage. An atomic

@@ -1,0 +1,210 @@
+{
+  "status": "ok",
+  "model": "gemini-3.5-flash-lite",
+  "provider": "Vertex AI Express",
+  "classes": 1000,
+  "target": {
+    "index": 166,
+    "label": "Walker hound, Walker foxhound"
+  },
+  "paper_reference": {
+    "index": 167,
+    "label": "English foxhound",
+    "source": "arXiv:2211.12857v3, page 1, seventh embedded image; paper raster rather than original ImageNet JPEG"
+  },
+  "score": "sampled_label_frequency",
+  "native_logprobs_supported": false,
+  "calibrated_correctness": false,
+  "selection_samples": 64,
+  "selection_counts": {
+    "bloodhound, sleuthhound": 14,
+    "Walker hound, Walker foxhound": 40,
+    "English foxhound": 10
+  },
+  "evaluations": {
+    "reference": {
+      "target_count": 94,
+      "samples": 128,
+      "target_frequency": 0.734375,
+      "target_wilson_95": [
+        0.6518470619103658,
+        0.8032449898364271
+      ],
+      "nonzero_class_counts": {
+        "bloodhound, sleuthhound": 26,
+        "Walker hound, Walker foxhound": 94,
+        "English foxhound": 8
+      }
+    },
+    "retained": {
+      "target_count": 87,
+      "samples": 128,
+      "target_frequency": 0.6796875,
+      "target_wilson_95": [
+        0.5946341124452171,
+        0.7542697938939907
+      ],
+      "nonzero_class_counts": {
+        "black-and-tan coonhound": 2,
+        "Walker hound, Walker foxhound": 87,
+        "English foxhound": 31,
+        "German short-haired pointer": 8
+      }
+    },
+    "removed": {
+      "target_count": 17,
+      "samples": 128,
+      "target_frequency": 0.1328125,
+      "target_wilson_95": [
+        0.08460228531840389,
+        0.20242016694495388
+      ],
+      "nonzero_class_counts": {
+        "beagle": 92,
+        "Walker hound, Walker foxhound": 17,
+        "English foxhound": 19
+      }
+    }
+  },
+  "retained_frequency_ratio": 0.925531914893617,
+  "removed_target_frequency_drop": 0.6015625,
+  "optimization": {
+    "steps": 30,
+    "mask_grid": [
+      49,
+      8,
+      8
+    ],
+    "mask_parameters": 3136,
+    "mask_energy": 0.6750118293355598,
+    "spatial_energy": 0.20131063332758822,
+    "finite_difference_denominator": "actual_clipped_probe_displacement",
+    "round_trip_max_error": 7.771561172376096e-16
+  },
+  "config": {
+    "model": {
+      "backend": "vertex",
+      "model": "gemini-3.5-flash-lite",
+      "api_key_env": "VERTEX_API_KEY",
+      "max_output_tokens": 128,
+      "generation_options": {
+        "thinkingConfig": {
+          "thinkingLevel": "MINIMAL"
+        }
+      }
+    },
+    "labels_path": "code/imagenet_utils/imagenet_labels.py",
+    "image_path": "code/imgs/english_foxhound_paper.png",
+    "image_size": 256,
+    "resize_mode": "stretch",
+    "transform": {
+      "name": "shearlet",
+      "scales": 4
+    },
+    "selection_samples": 64,
+    "evaluation_samples": 128,
+    "evaluation_workers": 8,
+    "optimization_sampling": {
+      "repeats": 2,
+      "temperature": 1.0,
+      "workers": 2
+    },
+    "retry": {
+      "retry_budget": 32,
+      "max_attempts": 3,
+      "backoff_seconds": 0.5
+    },
+    "explainer": {
+      "steps": 30,
+      "grid_size": 8,
+      "learning_rate": 0.1,
+      "perturbation_size": 0.1,
+      "mask_init": 1.0,
+      "distortion_weight": 1.0,
+      "mask_weight": 1.0,
+      "spatial_weight": 2.0,
+      "noise": "uniform",
+      "noise_samples": 4,
+      "noise_workers": 4,
+      "seed": 42,
+      "fidelity_reference": "one",
+      "noise_channels": "shared_gray",
+      "resample_noise": true,
+      "spatial_domain": "gray_clipped",
+      "normalize_final": true,
+      "unbiased_sampling_distortion": true,
+      "optimizer": "hybrid_adam",
+      "max_requests": 1100
+    },
+    "max_total_requests": 1600
+  },
+  "requests": {
+    "final_run": 1420,
+    "final_run_bound": 1454,
+    "retries": 0,
+    "earlier_failed_prototype_attempts": 1120,
+    "earlier_failed_prototype_successes": 1119,
+    "earlier_capability_probe_attempts": 1,
+    "earlier_successful_single_sample_probe": 1,
+    "earlier_64_sample_probe_not_saved_due_to_serialization_error": 64,
+    "all_session_attempts": 2606
+  },
+  "usage_final_run": {
+    "candidatesTokenCount": 4260,
+    "promptTokenCount": 15833000,
+    "totalTokenCount": 15837260,
+    "cachedContentTokenCount": 7828065
+  },
+  "elapsed_seconds_final_run": 463.40249279199634,
+  "provenance": {
+    "code_commit": "2adf84e91eb2c63f1afdf5bcc9b2e0e23dc95855",
+    "python": "3.12.14",
+    "numpy": "1.26.4",
+    "scipy": "1.17.1",
+    "Pillow": "12.3.0",
+    "pyshearlab": "0.0.1",
+    "matplotlib": "3.11.2"
+  },
+  "artifacts": {
+    "explanation.pdf": {
+      "path": "../assets/gemini35-imagenet-20261006/explanation.pdf",
+      "sha256": "45dc84ab4694b7c45e2b75990a03722bfd6f702506ebfbb6713e85244060bd34"
+    },
+    "explanation.png": {
+      "path": "../assets/gemini35-imagenet-20261006/explanation.png",
+      "sha256": "06c26bbdc6bda67df83c06b788e1e29ecb6f367528a5a1694cb63f11ab9e2453"
+    },
+    "retained.png": {
+      "path": "../assets/gemini35-imagenet-20261006/retained.png",
+      "sha256": "5e47be4c2e41a19ab31e5c0d74679bddb06e7395eac1bba69005950c4731b093"
+    },
+    "mask.npy": {
+      "path": "../assets/gemini35-imagenet-20261006/mask.npy",
+      "sha256": "a9c759674c57ffdb4cc1471a1b783f5d681c508943a8124c73d6c489364f4952"
+    },
+    "comparison.png": {
+      "path": "../assets/gemini35-imagenet-20261006/comparison.png",
+      "sha256": "55a11a5ac6fbf3892bc8865ce66d7c91143da95fcfb946a24a508bc513646a47"
+    },
+    "comparison.pdf": {
+      "path": "../assets/gemini35-imagenet-20261006/comparison.pdf",
+      "sha256": "95da6fbc154b8d433849158951397f71cbb51c134f270e64da8d6f04cc5795cd"
+    },
+    "removed.png": {
+      "path": "../assets/gemini35-imagenet-20261006/removed.png",
+      "sha256": "72108f119cb21232996c3d4495de25483de6f424ff08ea36b803e458b816a843"
+    },
+    "input.png": {
+      "path": "../assets/gemini35-imagenet-20261006/input.png",
+      "sha256": "213bfad6973d5a6c8db3eb57e0d0d1afd3744d5279ee4029a0531aecf7884fcf"
+    }
+  },
+  "limitations": [
+    "API black-box adaptation; not a strict replacement-only replication of the 150/300-step paper experiment.",
+    "The 30-step grouped mask is less sparse than the paper figure; no convergence or minimal-support claim.",
+    "Wilson intervals assume approximately independent generation draws; frequencies measure model answers, not diagnostic correctness.",
+    "Native log-margin/probability objectives cannot be compared on this unsupported deployment.",
+    "Two-sample optimization preview diagnostics in the raw result are not the held-out 128-sample estimates used by the figures."
+  ],
+  "prompt_sha256": "8d2528b1e5b582d9f1deee938a736cc664165133144d5f9917a33da814c5a3ba"
+}
