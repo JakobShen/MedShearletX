@@ -58,6 +58,9 @@ class GeminiBackend:
         """A repeated provider seed can correlate independent sampling requests."""
         return self.generation_options.get("seed")
 
+    def _request_url(self) -> str:
+        return self.base_url + "/models/" + quote(self.model, safe="") + ":generateContent"
+
     def predict(
         self, image: Image.Image, task: ClassificationTask, *,
         require_logprobs: bool, temperature: float = 1.0,
@@ -79,7 +82,7 @@ class GeminiBackend:
         }
         key = api_key(self.api_key_env)
         response = request_json(
-            self.transport, self.base_url + "/models/" + quote(self.model, safe="") + ":generateContent",
+            self.transport, self._request_url(),
             # Header auth keeps the API key out of URLs and URL-bearing errors.
             headers={"x-goog-api-key": key} if key else {}, payload=payload, timeout=self.timeout,
         )

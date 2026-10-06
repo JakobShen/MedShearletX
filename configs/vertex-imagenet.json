@@ -1,0 +1,23 @@
+{
+  "model": {
+    "backend": "vertex", "model": "gemini-3.5-flash-lite",
+    "api_key_env": "VERTEX_API_KEY", "max_output_tokens": 128,
+    "generation_options": {"thinkingConfig": {"thinkingLevel": "MINIMAL"}}
+  },
+  "labels_path": "code/imagenet_utils/imagenet_labels.py",
+  "image_path": "code/imgs/english_foxhound_paper.png",
+  "image_size": 256, "resize_mode": "stretch",
+  "transform": {"name": "shearlet", "scales": 4},
+  "selection_samples": 64, "evaluation_samples": 128, "evaluation_workers": 8,
+  "optimization_sampling": {"repeats": 2, "temperature": 1.0, "workers": 2},
+  "retry": {"retry_budget": 32, "max_attempts": 3, "backoff_seconds": 0.5},
+  "explainer": {
+    "steps": 30, "grid_size": 8, "learning_rate": 0.1, "perturbation_size": 0.1,
+    "mask_init": 1.0, "distortion_weight": 1.0, "mask_weight": 1.0, "spatial_weight": 2.0,
+    "noise": "uniform", "noise_samples": 4, "noise_workers": 4, "seed": 42,
+    "fidelity_reference": "one", "noise_channels": "shared_gray", "resample_noise": true,
+    "spatial_domain": "gray_clipped", "normalize_final": true,
+    "unbiased_sampling_distortion": true, "optimizer": "hybrid_adam", "max_requests": 1100
+  },
+  "max_total_requests": 1600
+}

@@ -14,6 +14,7 @@ from .base import Backend, BackendRequestError, Transport
 from .gemini import GeminiBackend
 from .mock import MockBackend
 from .openai_compatible import OpenAICompatibleBackend
+from .vertex import VertexBackend
 
 
 BackendFactory = Callable[..., Backend]
@@ -22,6 +23,7 @@ _REGISTRY: dict[str, BackendFactory] = {
     "openai": lambda **kwargs: OpenAICompatibleBackend(provider="openai", **kwargs),
     "vllm": lambda **kwargs: OpenAICompatibleBackend(provider="vllm", **kwargs),
     "gemini": GeminiBackend,
+    "vertex": VertexBackend,
 }
 
 
@@ -64,5 +66,5 @@ def create_backend(config: Mapping[str, Any], *, transport: Transport | None = N
 
 __all__ = [
     "Backend", "BackendRequestError", "GeminiBackend", "MockBackend",
-    "OpenAICompatibleBackend", "create_backend", "register_backend",
+    "OpenAICompatibleBackend", "VertexBackend", "create_backend", "register_backend",
 ]

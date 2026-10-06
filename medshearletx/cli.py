@@ -8,6 +8,8 @@ import numpy as np
 from PIL import Image
 
 from .data import ImageDataset
+from .audit import RequestBudgetExceeded
+from .backends import BackendRequestError
 from .runner import plan_run, run
 
 
@@ -17,6 +19,11 @@ def build_parser():
     demo = commands.add_parser("demo", help="Run three scores on a synthetic image with a mock VLM")
     demo.add_argument("--output", default="output/demo")
     demo.add_argument("--transform", choices=["shearlet", "identity"], default="shearlet")
+    imagenet = commands.add_parser("imagenet", help="Run the paper-image 1000-way VLM experiment")
+    imagenet.add_argument("--config", default="configs/vertex-imagenet.json")
+    imagenet.add_argument("--root", default=".", help="Project root for paths in the config")
+    imagenet.add_argument("--output", required=True)
+    imagenet.add_argument("--dry-run", action="store_true")
     for name in ("run", "probe"):
         command = commands.add_parser(name, help="Explain images" if name == "run" else "Test score capabilities on images")
         command.add_argument("--config", required=True)
@@ -34,6 +41,15 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "imagenet":
+            from .imagenet_experiment import prepare_experiment, run_experiment
+            config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+            if args.dry_run:
+                print(json.dumps(prepare_experiment(config, args.root)[-1], indent=2))
+                return 0
+            result = run_experiment(config, args.root, args.output)
+            print(f"Fixed target: {result['target']}; results: {Path(args.output).resolve() / 'result.json'}")
+            return 0
         if args.command == "demo":
             destination = Path(args.output)
             if destination.exists() and any(destination.iterdir()):
@@ -76,6 +92,6 @@ def main(argv=None):
             if row["status"] != "ok":
                 print(f"{row['mode']}: {row['error']}")
         return 0 if successes == len(results) else 2
-    except (ValueError, KeyError, OSError, ImportError) as exc:
+    except (ValueError, KeyError, OSError, ImportError, BackendRequestError, RequestBudgetExceeded) as exc:
         print(f"Error: {exc}")
         return 2

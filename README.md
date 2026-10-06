@@ -3,8 +3,9 @@
 This fork adds an independent **black-box VLM adaptation** of ShearletX.
 The original classifier experiments are below and remain in `code/`.
 The new package needs Python **3.10+** and runs without PyTorch or model weights.
-Real VLM endpoints have **not** been tested yet; the offline demo uses a mock
-classifier and the actual PyShearLab transform.
+The Vertex adapter has been tested against **Gemini 3.5 Flash-Lite** with the
+complete ImageNet-1k task. The offline demo uses a mock classifier and the actual
+PyShearLab transform.
 
 ## Plan and score choices
 
@@ -40,7 +41,7 @@ Create a separate environment for this package:
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[shearlet]'
+python -m pip install -e '.[shearlet,figures]'
 python -m unittest discover -s tests -v
 python -m medshearletx demo --output output/demo
 ```
@@ -80,6 +81,33 @@ need a larger output budget or `token_budget_field: "max_completion_tokens"`;
 native scoring still requires a single visible class token. Fixed provider seeds
 are rejected for agreement because they can produce correlated repeated draws.
 
+## Paper-image ImageNet experiment
+
+[The experiment protocol](docs/imagenet-replication.md) documents the exact image,
+all 1000 classes, paper parameters, sampling score and API adaptations. This
+uses `gemini-3.5-flash-lite` through Vertex Express mode. Set `VERTEX_API_KEY` in
+your environment, then run:
+
+```bash
+python -m medshearletx imagenet --config configs/vertex-imagenet.json --output output/imagenet-preview --dry-run
+python -m medshearletx imagenet --config configs/vertex-imagenet.json --output output/imagenet-run
+```
+
+Run from the repository root, or pass `--root /path/to/MedShearletX`. The image
+matches the standing English foxhound in the paper's Figure 1; its reference
+label is recorded separately from Gemini's own predicted class. An existing
+output directory must be empty. Native logprobs are unsupported on this tested
+deployment, so the figures show **retained sampling frequency**, with counts and
+Wilson intervals. Thirty optimization steps and a coarse grid are explicitly
+recorded; this is an API adaptation, not a complete 150/300-step replication.
+
+Target selection, optimization and final evaluation use separate samples. Every
+provider attempt is recorded in `requests.jsonl` before downstream processing,
+including image/prompt hashes, generated labels and token usage. An atomic
+request cap applies even with concurrent sampling. No keys or headers enter
+these records. `result.json` links the PNG/PDF figures and preserves the raw
+classification counts, removed-image check, optimization history and settings.
+
 ## Module boundaries and output
 
 | Location | Responsibility |
@@ -87,10 +115,13 @@ are rejected for agreement because they can produce correlated repeated draws.
 | `medshearletx/types.py` | Classification task and provider evidence contracts |
 | `medshearletx/backends/` | Provider protocol adapters and backend registry |
 | `medshearletx/scoring.py` | Score extraction and uncertainty diagnostics |
+| `medshearletx/audit.py` | Per-request evidence and a concurrency-safe request cap |
 | `medshearletx/data.py` | Lazy folder/CSV dataset and image loading |
+| `medshearletx/tasks.py` | Ordered ImageNet task definitions |
 | `medshearletx/transforms.py` | Shearlet representation and explicit identity control |
 | `medshearletx/explainer.py` | Grouped mask optimization and query budget |
 | `medshearletx/runner.py`, `cli.py` | Preprocessing, comparison artifacts and commands |
+| `medshearletx/imagenet_experiment.py`, `figures.py` | Experiment protocol and measured figure export |
 
 Adding a deployment using an existing protocol requires only **one config**.
 A new protocol implements `Backend.predict` and registers its builder; the
@@ -115,8 +146,8 @@ DICOM/windowing and volumetric loading should be added as independent data
 adapters. Signed coefficients are preserved; pixels are clipped and quantized
 only for PNG/model input. Saved kept/removed images need not sum to the original.
 
-Next: use the supplied VLM API to check tokenization/capabilities and compare
-score sensitivity and cost. A later medical audit needs a defined task and an
+Next: compare score sensitivity and optimization cost across deployments. A
+later medical audit needs a defined task and an
 independent labeled holdout for classification, calibration and explanation
 quality; no medical-model claims have been established by the offline tests.
 

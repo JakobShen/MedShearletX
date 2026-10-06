@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24,<2", "Pillow>=10"]
 
 [project.optional-dependencies]
+figures = ["matplotlib>=3.7"]
 shearlet = [
     "scipy>=1.11",
     "pyshearlab @ https://github.com/stefanloock/pyshearlab/archive/4cb8a740f0075913f0efc6ffa2488ea3aab970dd.zip",

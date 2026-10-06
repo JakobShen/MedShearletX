@@ -1,4 +1,6 @@
 import math
+from threading import Lock
+import time
 import unittest
 
 from PIL import Image
@@ -15,6 +17,37 @@ class StubBackend:
     def predict(self, image, task, *, require_logprobs, temperature=1.0):
         self.calls.append((require_logprobs, temperature))
         return next(self.predictions)
+
+
+class ConcurrentBackend:
+    """Atomic offline fake with varying delays and visible in-flight calls."""
+
+    def __init__(self, *, invalid_at=None, fail_at=None, thread_safe=True):
+        self.thread_safe = thread_safe
+        self.invalid_at = invalid_at
+        self.fail_at = fail_at
+        self.lock = Lock()
+        self.calls = []
+        self.active = 0
+        self.maximum_active = 0
+
+    def predict(self, image, task, *, require_logprobs, temperature=1.0):
+        with self.lock:
+            index = len(self.calls)
+            self.calls.append((require_logprobs, temperature))
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+        try:
+            time.sleep(0.005 * (4 - index % 4))
+            if index == self.fail_at:
+                raise CapabilityError("offline provider failure")
+            return Prediction(
+                sampled_label="invalid" if index == self.invalid_at else task.labels[index % 2],
+                metadata={"sample_index": index, "effective_temperature": 1.0},
+            )
+        finally:
+            with self.lock:
+                self.active -= 1
 
 
 class ScoringTests(unittest.TestCase):
@@ -114,6 +147,64 @@ class ScoringTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "temperature > 0"):
             Scorer(StubBackend([]), self.task, mode="agreement", temperature=0)
 
+    def test_parallel_agreement_counts_samples_and_provider_temperature(self):
+        backend = ConcurrentBackend()
+        scorer = Scorer(backend, self.task, mode="agreement", repeats=20, temperature=0.7, workers=4)
+        result = scorer.evaluate(self.image)
+        self.assertEqual(result.sample_counts, {"normal": 10, "abnormal": 10})
+        self.assertEqual(result.requests, 20)
+        self.assertEqual(scorer.requests, 20)
+        self.assertGreater(backend.maximum_active, 1)
+        self.assertLessEqual(backend.maximum_active, 4)
+        self.assertEqual(backend.active, 0)
+        self.assertEqual(backend.calls, [(False, 0.7)] * 20)
+        self.assertEqual(len(result.diagnostics["backend"]), 20)
+        self.assertEqual({item["sample_index"] for item in result.diagnostics["backend"]}, set(range(20)))
+        self.assertEqual(result.diagnostics["requested_temperature"], 0.7)
+        self.assertEqual(result.diagnostics["effective_temperature"], 1.0)
+        self.assertEqual(result.diagnostics["requested_workers"], 4)
+        self.assertEqual(result.diagnostics["workers"], 4)
+
+    def test_parallel_failure_counts_all_completed_attempts(self):
+        for failure in ("invalid_at", "fail_at"):
+            with self.subTest(failure=failure):
+                backend = ConcurrentBackend(**{failure: 1})
+                scorer = Scorer(backend, self.task, mode="agreement", repeats=12, workers=4)
+                with self.assertRaises((InvalidPredictionError, CapabilityError)):
+                    scorer.evaluate(self.image)
+                self.assertEqual(scorer.requests, len(backend.calls))
+                self.assertGreaterEqual(scorer.requests, 2)
+                self.assertLessEqual(scorer.requests, 12)
+                if failure == "invalid_at":
+                    self.assertEqual(scorer.requests, 12)
+                self.assertEqual(backend.active, 0)
+
+    def test_workers_are_bounded_and_unsafe_backends_require_sequential_sampling(self):
+        for workers in (0, -1, 33, 1.5, True, None):
+            with self.subTest(workers=workers), self.assertRaisesRegex(ValueError, "workers"):
+                Scorer(StubBackend([]), self.task, workers=workers)
+        backend = ConcurrentBackend(thread_safe=False)
+        with self.assertRaisesRegex(ValueError, "workers=1"):
+            Scorer(backend, self.task, mode="agreement", workers=2)
+        self.assertEqual(backend.calls, [])
+        Scorer(backend, self.task, mode="agreement", workers=1)
+
+    def test_effective_workers_do_not_exceed_sample_count(self):
+        result = Scorer(ConcurrentBackend(), self.task, mode="agreement", repeats=2, workers=8).evaluate(self.image)
+        self.assertEqual(result.diagnostics["requested_workers"], 8)
+        self.assertEqual(result.diagnostics["workers"], 2)
+
+    def test_effective_temperature_uses_metadata_and_does_not_guess(self):
+        for metadata, expected in (
+            ([{"temperature": 0.6}] * 2, 0.6),
+            ([{}, {}], None),
+            ([{"effective_temperature": 1.0}, {"effective_temperature": 0.5}], None),
+        ):
+            with self.subTest(metadata=metadata):
+                backend = StubBackend([Prediction(sampled_label="normal", metadata=item) for item in metadata])
+                result = Scorer(backend, self.task, mode="agreement", repeats=2).evaluate(self.image)
+                self.assertEqual(result.diagnostics["effective_temperature"], expected)
+
     def test_unanimous_small_sample_does_not_imply_certainty(self):
         backend = StubBackend([Prediction(sampled_label="normal") for _ in range(4)])
         result = Scorer(backend, self.task, mode="agreement", repeats=4).evaluate(self.image)
@@ -164,7 +255,7 @@ class ClassificationTaskTests(unittest.TestCase):
         self.assertIn("no explanation", task.prompt)
 
     def test_invalid_tasks_rejected(self):
-        for labels, question in [(("one",), "question"), (("same", "same"), "question"), (("a", " "), "question"), (("a", "b"), " "), (tuple(map(str, range(21))), "question")]:
+        for labels, question in [(("one",), "question"), (("same", "same"), "question"), (("a", " "), "question"), (("a", "b"), " "), (tuple(map(str, range(1001))), "question")]:
             with self.subTest(labels=labels, question=question):
                 with self.assertRaises(ValueError):
                     ClassificationTask(labels, question)

@@ -22,6 +22,11 @@ from ..types import Backend, ClassificationTask, InvalidPredictionError
 class BackendRequestError(RuntimeError):
     """An HTTP/configuration failure without provider bodies or credentials."""
 
+    def __init__(self, message, *, retryable=False, status_code=None):
+        super().__init__(message)
+        self.retryable = retryable is True
+        self.status_code = status_code if type(status_code) is int else None
+
 
 Transport = Callable[..., Mapping[str, Any]]
 
@@ -45,10 +50,11 @@ def http_json(
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         raise BackendRequestError(
-            f"Provider returned HTTP {error.code}; check credentials, model capability, and configuration."
+            f"Provider returned HTTP {error.code}; check credentials, model capability, and configuration.",
+            retryable=error.code in {429, 500, 502, 503, 504}, status_code=error.code,
         ) from None
     except (urllib.error.URLError, TimeoutError, OSError):
-        raise BackendRequestError("Provider connection failed or timed out.") from None
+        raise BackendRequestError("Provider connection failed or timed out.", retryable=True) from None
     except (UnicodeError, ValueError):
         raise BackendRequestError("Provider returned invalid JSON.") from None
     if not isinstance(result, Mapping):

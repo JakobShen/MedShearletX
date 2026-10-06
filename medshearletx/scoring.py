@@ -1,7 +1,9 @@
 """Classification evidence and scores without self-reported confidence."""
 
 from dataclasses import dataclass, field, replace
+from concurrent.futures import ThreadPoolExecutor
 from numbers import Real
+from threading import Lock
 
 import numpy as np
 from PIL import Image
@@ -78,6 +80,12 @@ class Scorer:
     preflight, so this is an upper bound on requests actually sent to a server.
     Native temperature zero is allowed; backend metadata records whether a
     provider reports probabilities before or after temperature adjustment.
+    A retry wrapper can perform additional HTTP attempts inside ``predict``;
+    use its RecordedBackend log and counter for those physical requests.
+    ``workers`` bounds concurrent agreement samples. Parallel batches finish
+    their running attempts before reporting a failure, so an invalid sample
+    can consume the full batch of requests. A backend can declare
+    ``thread_safe = False`` to require sequential sampling.
     """
 
     def __init__(
@@ -87,11 +95,14 @@ class Scorer:
         mode: str = "probability",
         repeats: int = 16,
         temperature: float = 1.0,
+        workers: int = 1,
     ) -> None:
         if mode not in MODES:
             raise ValueError(f"unknown score mode: {mode!r}")
         if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 1:
             raise ValueError("repeats must be a positive integer")
+        if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 32:
+            raise ValueError("workers must be an integer between 1 and 32")
         if (
             isinstance(temperature, bool)
             or not isinstance(temperature, Real)
@@ -103,20 +114,28 @@ class Scorer:
             raise ValueError("agreement requires temperature > 0 to measure sampling variability")
         if mode == "agreement" and getattr(backend, "fixed_sampling_seed", None) is not None:
             raise ValueError("agreement requires independent draws; remove the provider's fixed sampling seed")
+        if mode == "agreement" and workers > 1 and getattr(backend, "thread_safe", True) is False:
+            raise ValueError("this backend requires workers=1 for reproducible, thread-safe sampling")
         self.backend = backend
         self.task = task
         self.mode = mode
         self.repeats = repeats
         self.temperature = float(temperature)
+        self.workers = workers
         self.requests = 0
+        self._requests_lock = Lock()
+
+    def _predict(self, image: Image.Image, *, require_logprobs: bool):
+        with self._requests_lock:
+            self.requests += 1
+        return self.backend.predict(
+            image, self.task, require_logprobs=require_logprobs, temperature=self.temperature
+        )
 
     def evaluate(self, image: Image.Image) -> ScoreResult:
         if self.mode == "agreement":
             return self._sample(image)
-        self.requests += 1
-        prediction = self.backend.predict(
-            image, self.task, require_logprobs=True, temperature=self.temperature
-        )
+        prediction = self._predict(image, require_logprobs=True)
         raw = prediction.label_logprobs
         if raw is None:
             raise CapabilityError("backend did not return native label log probabilities")
@@ -168,11 +187,19 @@ class Scorer:
     def _sample(self, image: Image.Image) -> ScoreResult:
         counts = dict.fromkeys(self.task.labels, 0)
         metadata = []
-        for index in range(self.repeats):
-            self.requests += 1
-            prediction = self.backend.predict(
-                image, self.task, require_logprobs=False, temperature=self.temperature
+        workers = min(self.workers, self.repeats)
+        if workers == 1:
+            predictions = (
+                self._predict(image, require_logprobs=False) for _ in range(self.repeats)
             )
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                # map retains sample order; materializing waits for the batch
+                # before validating labels, without silently dropping failures.
+                predictions = list(executor.map(
+                    lambda _: self._predict(image, require_logprobs=False), range(self.repeats)
+                ))
+        for index, prediction in enumerate(predictions):
             label = prediction.sampled_label
             if not isinstance(label, str) or label not in counts:
                 raise InvalidPredictionError(
@@ -199,12 +226,25 @@ class Scorer:
                     for label, value in probabilities.items()
                 },
                 "temperature": self.temperature,
+                "requested_temperature": self.temperature,
+                "effective_temperature": _effective_temperature(metadata),
+                "workers": workers,
+                "requested_workers": self.workers,
                 "repeats": self.repeats,
                 "evidence": "sampled_label_frequency",
                 "calibrated_correctness": False,
                 "backend": metadata,
             },
         )
+
+
+def _effective_temperature(metadata: list[dict]) -> float | None:
+    """Report a provider-confirmed common temperature, including overrides."""
+    values = [item.get("effective_temperature", item.get("temperature")) for item in metadata]
+    if (not values or any(isinstance(value, bool) or not isinstance(value, Real)
+                          or not np.isfinite(value) or value < 0 for value in values)):
+        return None
+    return float(values[0]) if all(value == values[0] for value in values) else None
 
 
 def _entropy(probabilities: np.ndarray) -> float:

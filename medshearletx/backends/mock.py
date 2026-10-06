@@ -10,6 +10,8 @@ from .base import validate_temperature
 
 
 class MockBackend:
+    thread_safe = False
+
     def __init__(self, *, seed: int = 0, model: str = "mock-spatial", supports_logprobs: bool = True) -> None:
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError("seed must be a non-negative integer.")
