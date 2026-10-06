@@ -103,7 +103,8 @@ class GeminiBackend:
         visible_parts = [part for part in parts if isinstance(part, Mapping) and not part.get("thought")]
         if not visible_parts or any(not isinstance(part.get("text"), str) for part in visible_parts):
             raise InvalidPredictionError("Gemini returned a non-text classification response.")
-        sampled_label = parse_label("".join(part["text"] for part in visible_parts), task)
+        visible_text = "".join(part["text"] for part in visible_parts)
+        sampled_label = parse_label(visible_text, task, allow_numeric_padding=not require_logprobs)
         class_logprobs = None
         if require_logprobs:
             logprobs = candidate.get("logprobsResult")
@@ -122,6 +123,7 @@ class GeminiBackend:
         metadata = {
             "backend": "gemini", "model": self.model, "temperature": temperature,
             "native_logprobs": require_logprobs, "token_budget": self.max_output_tokens,
+            "numeric_padding_normalized": visible_text.strip() not in task.codes,
             "generation_option_names": sorted(self.generation_options),
             "finish_reason": candidate.get("finishReason"),
             "usage": safe_usage(response.get("usageMetadata")),

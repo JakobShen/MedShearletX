@@ -30,7 +30,7 @@ _METADATA_FIELDS = {
     "native_logprobs_deprecated", "token_budget", "token_budget_field",
     "generation_option_names", "finish_reason", "usage", "response_id",
     "image_detail", "verbalizer_policy", "class_mass_is_lower_bound",
-    "class_token_ids_verified", "logprob_scale",
+    "class_token_ids_verified", "logprob_scale", "numeric_padding_normalized",
 }
 
 

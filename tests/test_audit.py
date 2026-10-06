@@ -94,6 +94,7 @@ class RecordedBackendTests(unittest.TestCase):
             "config": {"api_key": "SECRET"}, "response_id": "https://secret-provider.test/response",
             "usage": {"promptTokenCount": 22, "url": "https://secret-provider.test", "key": "SECRET"},
             "generation_option_names": ["thinkingConfig", "https://secret-provider.test", {"key": "SECRET"}],
+            "numeric_padding_normalized": True,
         }
         backend = RecordedBackend(AuditStubBackend(prediction=Prediction(sampled_label="normal", metadata=metadata)),
                                   self.path, max_requests=1)
@@ -101,7 +102,8 @@ class RecordedBackendTests(unittest.TestCase):
         saved = self._entries()[0]["prediction"]["metadata"]
         self.assertEqual(saved, {"backend": "offline", "model": "offline-vision",
                                  "usage": {"promptTokenCount": 22},
-                                 "generation_option_names": ["thinkingConfig"]})
+                                 "generation_option_names": ["thinkingConfig"],
+                                 "numeric_padding_normalized": True})
         self.assertNotIn("SECRET", self.path.read_text())
         self.assertNotIn("https://", self.path.read_text())
 

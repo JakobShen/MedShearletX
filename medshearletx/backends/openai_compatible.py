@@ -120,7 +120,8 @@ class OpenAICompatibleBackend:
             raise InvalidPredictionError("The model refused or returned a non-classification response.")
         if choice.get("finish_reason") not in {"stop", "length", None}:
             raise InvalidPredictionError("The provider did not finish a usable classification.")
-        sampled_label = parse_label(message.get("content"), task)
+        visible_text = message.get("content")
+        sampled_label = parse_label(visible_text, task, allow_numeric_padding=not require_logprobs)
         class_logprobs = None
         class_token_ids_verified = False
         if require_logprobs:
@@ -146,6 +147,7 @@ class OpenAICompatibleBackend:
         metadata = {
             "backend": self.provider, "model": self.model, "temperature": temperature,
             "native_logprobs": require_logprobs, "image_detail": self.image_detail,
+            "numeric_padding_normalized": visible_text.strip() not in task.codes,
             "token_budget_field": self.token_budget_field, "token_budget": self.max_tokens,
             "generation_option_names": sorted(self.generation_options),
             "finish_reason": choice.get("finish_reason"), "usage": safe_usage(response.get("usage")),

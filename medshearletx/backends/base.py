@@ -142,10 +142,29 @@ def validate_options(options: Mapping[str, Any] | None, protected: set[str]) -> 
     return result
 
 
-def parse_label(text: Any, task: ClassificationTask) -> str:
-    if not isinstance(text, str) or text.strip() not in task.codes:
-        raise InvalidPredictionError("Expected exactly one configured class code; got an invalid or refused answer.")
-    return task.labels[task.codes.index(text.strip())]
+def parse_label(
+    text: Any, task: ClassificationTask, *, allow_numeric_padding: bool = False,
+) -> str:
+    """Read one class code; optional numeric padding repair is sampling-only.
+
+    Native token scores must keep the exact configured verbalizers. Sampling
+    can treat an unsigned ASCII integer as the same numeric option regardless
+    of its leading zeros, without accepting prose or changing the class set.
+    """
+    if isinstance(text, str):
+        text = text.strip()
+        codes = task.codes
+        if text in codes:
+            return task.labels[codes.index(text)]
+        if allow_numeric_padding and len(task.labels) > 20 and re.fullmatch(r"[0-9]+", text):
+            # Strip padding before int conversion so arbitrarily many leading
+            # zeros cannot trigger Python's integer-string length limit.
+            digits = text.lstrip("0") or "0"
+            if len(digits) <= len(str(len(task.labels) - 1)):
+                index = int(digits)
+                if index < len(task.labels):
+                    return task.labels[index]
+    raise InvalidPredictionError("Expected exactly one configured class code; got an invalid or refused answer.")
 
 
 def single_item(value: Any, description: str) -> Mapping[str, Any]:

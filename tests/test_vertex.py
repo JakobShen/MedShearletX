@@ -88,6 +88,17 @@ class VertexTest(unittest.TestCase):
         self.assertEqual(result.metadata["effective_temperature"], 0.7)
         self.assertFalse(result.metadata["native_logprobs_deprecated"])
 
+    def test_full_imagenet_padding_variants_remain_the_same_sampled_class(self):
+        for text, index, normalized in (("0160", 160, True), ("160", 160, False),
+                                        ("016", 16, False), ("001", 1, False)):
+            with self.subTest(text=text):
+                backend = VertexBackend(model="gemini-3.5-flash-lite", api_key_env=None,
+                                        transport=FakeTransport(response(text)))
+                result = backend.predict(self.image, self.task, require_logprobs=False)
+                self.assertEqual(result.sampled_label, f"label-{index}")
+                self.assertIs(result.metadata["numeric_padding_normalized"], normalized)
+                self.assertEqual(result.metadata["backend"], "vertex")
+
     def test_native_capability_is_explicit_and_all_class_evidence_stays_required(self):
         transport = FakeTransport(response("A", native=True))
         task = ClassificationTask(("normal", "abnormal"), "Classify image.")

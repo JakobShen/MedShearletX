@@ -14,6 +14,7 @@ from medshearletx.backends import (
     BackendRequestError, GeminiBackend, MockBackend, OpenAICompatibleBackend,
     create_backend, register_backend,
 )
+from medshearletx.backends.base import parse_label
 from medshearletx.types import Backend, CapabilityError, ClassificationTask, InvalidPredictionError
 
 
@@ -94,6 +95,67 @@ class BackendsTest(unittest.TestCase):
         self.assertIsNone(result.label_logprobs)
         self.assertEqual(result.sampled_label, "normal")
         self.assertNotIn("logprobs", transport.calls[0]["payload"])
+
+    def test_numeric_padding_parser_is_opt_in_and_class_preserving(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        for text, index in (("0160", 160), ("160", 160), ("016", 16), ("16", 16),
+                            ("001", 1), ("1", 1), ("000", 0), ("00", 0), (" 0160\n", 160)):
+            with self.subTest(text=text):
+                self.assertEqual(parse_label(text, task, allow_numeric_padding=True), f"label-{index}")
+        for text in ("160", "016", "001", "000"):
+            self.assertEqual(parse_label(text, task), f"label-{int(text)}")
+        for text in ("0160", "16", "1"):
+            with self.subTest(strict_text=text), self.assertRaises(InvalidPredictionError):
+                parse_label(text, task)
+        for text in ("1000", "01000", "-160", "+160", "160.0", "1e2", "class 160",
+                     "160 Afghan", '"160"', "１６０", "١٦٠", "", None, 160):
+            with self.subTest(invalid_text=text), self.assertRaises(InvalidPredictionError):
+                parse_label(text, task, allow_numeric_padding=True)
+        with self.assertRaises(InvalidPredictionError):
+            parse_label("0", self.task, allow_numeric_padding=True)
+        twenty_one = ClassificationTask(tuple(f"label-{index}" for index in range(21)), "Classify image.")
+        self.assertEqual(parse_label("001", twenty_one, allow_numeric_padding=True), "label-1")
+        with self.assertRaises(InvalidPredictionError):
+            parse_label("21", twenty_one, allow_numeric_padding=True)
+
+    def test_providers_normalize_only_sampled_numeric_codes_and_report_changes(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        for provider, fixture in ((OpenAICompatibleBackend, openai_response), (GeminiBackend, gemini_response)):
+            for text, index, normalized in (("0160", 160, True), ("160", 160, False),
+                                            ("016", 16, False), ("16", 16, True), ("001", 1, False)):
+                with self.subTest(provider=provider.__name__, text=text):
+                    response = fixture()
+                    if provider is GeminiBackend:
+                        response["candidates"][0]["content"]["parts"] = [{"thought": True, "text": "hidden"}, {"text": text}]
+                    else:
+                        response["choices"][0]["message"]["content"] = text
+                    backend = provider(model="offline", api_key_env=None, supports_logprobs=True,
+                                       transport=FakeTransport(response))
+                    result = backend.predict(self.image, task, require_logprobs=False)
+                    self.assertEqual(result.sampled_label, f"label-{index}")
+                    self.assertIs(result.metadata["numeric_padding_normalized"], normalized)
+                    self.assertIsNone(result.label_logprobs)
+                    if normalized:
+                        with self.assertRaises(InvalidPredictionError):
+                            backend.predict(self.image, task, require_logprobs=True)
+
+    def test_native_chosen_numeric_token_also_keeps_canonical_padding(self):
+        task = ClassificationTask(tuple(f"label-{index}" for index in range(1000)), "Classify image.")
+        for provider, fixture in ((OpenAICompatibleBackend, openai_response), (GeminiBackend, gemini_response)):
+            with self.subTest(provider=provider.__name__):
+                response = fixture()
+                if provider is GeminiBackend:
+                    candidate = response["candidates"][0]
+                    candidate["content"]["parts"] = [{"text": "160"}]
+                    candidate["logprobsResult"]["chosenCandidates"][0]["token"] = "0160"
+                else:
+                    choice = response["choices"][0]
+                    choice["message"]["content"] = "160"
+                    choice["logprobs"]["content"][0]["token"] = "0160"
+                backend = provider(model="offline", api_key_env=None, supports_logprobs=True,
+                                   transport=FakeTransport(response))
+                with self.assertRaisesRegex(InvalidPredictionError, "configured class code"):
+                    backend.predict(self.image, task, require_logprobs=True)
 
     def test_missing_class_and_sentinel_fail_without_floor(self):
         for top_entries in [
