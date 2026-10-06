@@ -11,11 +11,12 @@ PyShearLab transform.
 
 The Chinese [design and implementation plan](docs/vlm-design.md) explains the
 paper, existing repository structure, score choices, limitations and next steps.
-The first version preserves the original target class score while penalizing
-mask size and reconstructed spatial energy. It replaces image gradients with
-SPSA on a coarse mask for each shearlet band. It is an approximation of the
-method, with a smaller mask search space, rather than a reproduction of all
-paper results or theoretical guarantees.
+The explainer combines target-score fidelity with penalties on mask size and
+reconstructed spatial energy. Paper profiles optimize the fixed target score
+toward one. Hybrid Adam uses SPSA for the API classification gradient and exact
+local gradients for the regularizers, on a coarse mask for each shearlet band.
+This adapts the method to APIs without image gradients; it does not reproduce
+the original optimizer, full mask search space or theoretical guarantees.
 
 | Score | Evidence | Use |
 | --- | --- | --- |
@@ -116,6 +117,54 @@ request cap applies even with concurrent sampling. No keys or headers enter
 these records. `result.json` links the PNG/PDF figures and preserves the raw
 classification counts, removed-image check, optimization history and settings.
 
+## Afghan hound: complete and five-class tasks
+
+The two new profiles use the original repository image
+`code/imgs/ILSVRC2012_val_00017625.JPEG`. Their measured results are **pending**;
+the Walker foxhound numbers above belong to the earlier standing-dog experiment.
+
+| Config | Classification task |
+| --- | --- |
+| `configs/vertex-afghan-imagenet.json` | All 1000 original ImageNet labels, output codes `000`–`999` |
+| `configs/vertex-afghan-fiveway.json` | Afghan hound, beagle, golden retriever, English foxhound, bulldog; codes A–E |
+
+Each run selects its target from the original image and keeps that target fixed.
+Every API query uses that run's entire candidate set, including perturbation and
+final evaluation queries. The 1000-class task stays 1000-way after selection;
+selecting a target does not turn it into a binary Walker foxhound question.
+The five-class profile is an explicitly restricted comparison that includes
+Afghan hound. Its frequencies refer to that different task, so interpret the two
+profiles' results with their candidate sets and prompts.
+
+Both profiles use 256×256 stretch, four scales and 49 shearlet bands, grayscale
+coefficient noise shared across RGB, and a 4×4 mask grid per band. They run 50
+hybrid Adam steps with two SPSA directions, four answers per perturbed image,
+two noise samples, learning rate 0.03 and initial perturbation radius 0.15.
+Selection uses 32 answers; independent original/retained/removed evaluation uses
+128 each. The planned bound is **2868 physical attempts including 32 retries**,
+with a hard limit of 3000 for each run.
+
+```bash
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json --dry-run
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json
+python -m medshearletx experiment --config configs/vertex-afghan-fiveway.json
+```
+
+`experiment` is the generic alias of `imagenet`. Without `--output`, each
+invocation creates `runs/<run_name>-<timestamp>/`; set `run_name` in the config
+and use `--root` when running outside the repository. An explicit `--output`
+still requires an empty directory. Task config supplies exactly one of `labels`
+or `imagenet_labels_path`, plus an optional question.
+
+Every iteration, including step zero, automatically saves
+`figures/f_n/stepNNN.png`, raw kept images in `images/f_n/`, removed images in
+`images/removed/`, and masks in `masks/`. Open the run's local `index.html` to
+browse steps with a slider; refresh it during the run to see newly saved steps.
+`metrics.json` stores the corresponding losses and mask metrics. These are
+current-iteration previews reconstructed locally, with no extra API calls and
+no separately measured per-step class probability. Final selected-mask figures
+and held-out sampling estimates remain separate in `result.json`.
+
 ## Module boundaries and output
 
 | Location | Responsibility |
@@ -125,11 +174,12 @@ classification counts, removed-image check, optimization history and settings.
 | `medshearletx/scoring.py` | Score extraction and uncertainty diagnostics |
 | `medshearletx/audit.py` | Per-request evidence and a concurrency-safe request cap |
 | `medshearletx/data.py` | Lazy folder/CSV dataset and image loading |
-| `medshearletx/tasks.py` | Ordered ImageNet task definitions |
+| `medshearletx/tasks.py` | Generic task factory and ordered complete ImageNet labels |
 | `medshearletx/transforms.py` | Shearlet representation and explicit identity control |
 | `medshearletx/explainer.py` | Grouped mask optimization and query budget |
 | `medshearletx/runner.py`, `cli.py` | Preprocessing, comparison artifacts and commands |
 | `medshearletx/imagenet_experiment.py`, `figures.py` | Experiment protocol and measured figure export |
+| `medshearletx/step_visuals.py` | Local iteration images, figures and slider |
 
 Adding a deployment using an existing protocol requires only **one config**.
 A new protocol implements `Backend.predict` and registers its builder; the

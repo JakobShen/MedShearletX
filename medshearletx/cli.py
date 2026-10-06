@@ -1,8 +1,10 @@
 """Offline demo, budget preview, capability probe and explanation comparison."""
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 from PIL import Image
@@ -19,10 +21,10 @@ def build_parser():
     demo = commands.add_parser("demo", help="Run three scores on a synthetic image with a mock VLM")
     demo.add_argument("--output", default="output/demo")
     demo.add_argument("--transform", choices=["shearlet", "identity"], default="shearlet")
-    imagenet = commands.add_parser("imagenet", help="Run the paper-image 1000-way VLM experiment")
+    imagenet = commands.add_parser("experiment", aliases=["imagenet"], help="Run a configured classification experiment")
     imagenet.add_argument("--config", default="configs/vertex-imagenet.json")
     imagenet.add_argument("--root", default=".", help="Project root for paths in the config")
-    imagenet.add_argument("--output", required=True)
+    imagenet.add_argument("--output", help="Defaults to runs/<run name>-<timestamp> under the project root")
     imagenet.add_argument("--dry-run", action="store_true")
     for name in ("run", "probe"):
         command = commands.add_parser(name, help="Explain images" if name == "run" else "Test score capabilities on images")
@@ -38,17 +40,30 @@ def build_parser():
     return parser
 
 
+def _experiment_output(args, config):
+    if args.output:
+        return Path(args.output)
+    name = config.get("run_name", Path(args.config).stem)
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("run_name must be a nonempty string")
+    name = re.sub(r"[^\w.-]+", "-", name).strip("._-") or "experiment"
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    return Path(args.root).resolve() / "runs" / f"{name}-{stamp}"
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "imagenet":
+        if args.command in {"experiment", "imagenet"}:
             from .imagenet_experiment import prepare_experiment, run_experiment
             config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+            output = _experiment_output(args, config)
             if args.dry_run:
-                print(json.dumps(prepare_experiment(config, args.root)[-1], indent=2))
+                plan = prepare_experiment(config, args.root)[-1]
+                print(json.dumps({**plan, "output": str(output.resolve())}, indent=2))
                 return 0
-            result = run_experiment(config, args.root, args.output)
-            print(f"Fixed target: {result['target']}; results: {Path(args.output).resolve() / 'result.json'}")
+            result = run_experiment(config, args.root, output)
+            print(f"Fixed target: {result['target']}; results: {output.resolve() / 'result.json'}")
             return 0
         if args.command == "demo":
             destination = Path(args.output)

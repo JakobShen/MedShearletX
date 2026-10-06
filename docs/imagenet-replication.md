@@ -1,6 +1,6 @@
-# Gemini 3.5 Flash-Lite 的 ImageNet 1000 类实验
+# Gemini 3.5 Flash-Lite 的 ImageNet 与少类别实验
 
-本实验先保留原 ShearletX 的 ImageNet 单图分类问题，再把分类器换成远程 VLM。问题始终是从仓库的 **全部 1000 个 ImageNet 类别**中选择一个类别；不得提前只留下狗品种，不得把正确标签告诉模型，也不得在解释图评分时缩小候选集。类别顺序、完整类别描述、prompt 和生成设置在原图、扰动图、最终解释图之间固定。
+完整 ImageNet 实验保留原 ShearletX 的单图分类问题，再把分类器换成远程 VLM。每次 API 调用始终从仓库的 **全部 1000 个 ImageNet 类别**中选择一个类别；不会在选出目标之后改成某一品种的二分类，也不会在解释图评分时缩小候选集。少类别实验则明确配置另一组候选，用来比较任务设计。每一轮内部，类别顺序、完整类别描述、prompt 和生成设置在原图、扰动图、最终解释图之间固定；图片的参考品种不作为正确答案提示给模型。
 
 ## 输入图片与出处
 
@@ -53,9 +53,9 @@ Gemini 的 token logprobs 能力必须以指定部署的实际能力检查为准
 
 ## 黑盒实现与可比性边界
 
-远程 API 没有图像梯度，因此无法直接执行原代码的 `loss.backward()`。当前 `hybrid_adam` 使用 SPSA 的正负扰动估计 **API fidelity 项**的梯度，mask L1 与 spatial L1 的梯度则通过本地 synthesis adjoint 精确计算。二者合并后由 Adam 更新，学习率 0.1，β₁=0.9、β₂=0.999、ε=10⁻⁸，mask 投影回 [0,1]。这样不必用远程随机 score 去近似已经能在本地计算的正则梯度。
+远程 API 没有图像梯度，因此无法直接执行原代码的 `loss.backward()`。当前 `hybrid_adam` 使用 SPSA 的正负扰动估计 **API fidelity 项**的梯度，mask L1 与 spatial L1 的梯度则通过本地 synthesis adjoint 精确计算。二者合并后由 Adam 更新，β₁=0.9、β₂=0.999、ε=10⁻⁸，mask 投影回 [0,1]；学习率由各实验配置指定。这样不必用远程随机 score 去近似已经能在本地计算的正则梯度。
 
-Mask 参数采用 band 内粗网格并展开至系数分辨率。每步重新采样 coefficient noise；plus、minus、更新后的 candidate 和之前的 best mask 使用同一批 noise。旧 best 需要重新评估，才能与当前 candidate 在同一 Monte Carlo batch 下比较。该流程每步有四组 noise probes。共同 coefficient noise 可以减少额外图像噪声，但 API 回答本身仍是独立随机采样。网格大小、步数、sampling repeats、noise samples 和总调用预算都写入结果。
+Mask 参数采用 band 内粗网格并展开至系数分辨率。每步重新采样 coefficient noise；各方向的 plus、minus、更新后的 candidate 和之前的 best mask 使用同一批 noise。旧 best 需要重新评估，才能与当前 candidate 在同一 Monte Carlo batch 下比较。一个方向时每步有四组 noise probes；两个方向时为六组，并对方向梯度取平均。共同 coefficient noise 可以减少额外图像噪声，但 API 回答本身仍是独立随机采样。网格大小、方向数、步数、sampling repeats、noise samples 和总调用预算都写入结果。
 
 Paper profile 对齐原图尺寸、4 scales、全 1 初始化、目标参考值 1、grayscale noise statistics、uniform Monte Carlo noise、正则项和最终显示归一化。SPSA、粗网格和采样频率仍是明确的算法偏差，因此本实验是 **ShearletX 的 API 黑盒适配**，不能称为原论文结果的精确复现，也不能继承原图的 37.29%。
 
@@ -65,7 +65,7 @@ API 请求预算需要覆盖原图、所有优化探针和最终验证。16 个 
 
 ### 小样本 fidelity 的无偏估计
 
-优化每张扰动图片时使用两个独立回答。直接计算 `(1 - k/n)^2` 会混入 Bernoulli 采样方差：其期望为 `(1-p)^2 + p(1-p)/n`，因此不再只优化原来的平方误差。
+首次 foxhound 配置对每张扰动图片使用两个独立回答，新的 Afghan 配置使用四个。直接计算 `(1 - k/n)^2` 会混入 Bernoulli 采样方差：其期望为 `(1-p)^2 + p(1-p)/n`，因此不再只优化原来的平方误差。
 
 `unbiased_sampling_distortion=true` 对参考 score `s` 使用：
 
@@ -73,7 +73,7 @@ API 请求预算需要覆盖原图、所有优化探针和最终验证。16 个 
 \widehat D = s^2 - 2s\frac{k}{n} + \frac{k(k-1)}{n(n-1)}, \qquad n\geq2.
 \]
 
-`k(k-1)` 统计不同采样之间的目标类命中配对，因此该项的期望为 `p²`。本次 `s=1`，等价于用 misses 的配对数估计 `(1-p)²`。当 `n=2` 时，只在两个回答都未命中目标类时贡献 1，其余情况贡献 0。它去除了平方频率的偏差，仍有较大方差；四组 coefficient noise 的平均与最终独立验证都有必要。该设置只允许 agreement score 且 `repeats>=2`。
+`k(k-1)` 统计不同采样之间的目标类命中配对，因此该项的期望为 `p²`。Paper profile 使用 `s=1`，等价于用 misses 的配对数估计 `(1-p)²`。当 `n=2` 时，只在两个回答都未命中目标类时贡献 1，其余情况贡献 0。它去除了平方频率的偏差，仍有采样方差；noise 平均与最终独立验证仍有必要。该设置只允许 agreement score 且 `repeats>=2`。
 
 ## 已实现的首次运行配置
 
@@ -111,6 +111,56 @@ python -m medshearletx imagenet --config configs/vertex-imagenet.json --root . -
 ```
 
 Dry run 检查类别、数据、配置和预算。实际运行要求 output directory 为空；重复实验选择新目录。`classification_prompt.txt` 保存完整 1000-way prompt，`requests.jsonl` 保存去除敏感信息的逐次模型证据，`selection.json`、`reference.json`、`retained.json`、`removed.json` 保存不同阶段的采样统计。Mask、优化 history、preprocessing、effective generation settings 与最终图均另行保存。实验结束后以 `result.json` 的实际数值为准，不预先填写 retained frequency 或结论。
+
+## Afghan hound：1000 类与五类对照（结果待运行）
+
+新实验使用仓库原始 `code/imgs/ILSVRC2012_val_00017625.JPEG`。上游示例将其作为 Afghan hound；这一参考标签的来源在 `image_metadata` 中记录，不代替 Gemini 的实际分类。两个配置分别为：
+
+| 配置 | 每次调用的候选集 |
+| --- | --- |
+| `configs/vertex-afghan-imagenet.json` | 全部 1000 个 ImageNet 类；Afghan hound 的 ID 为 160，完整名称为 `Afghan hound, Afghan` |
+| `configs/vertex-afghan-fiveway.json` | `Afghan hound`、`beagle`、`golden retriever`、`English foxhound`、`bulldog`，输出 A–E |
+
+五分类包含图片的参考品种，避免候选缺失迫使模型选择其他品种。它是另一个任务，问题明确询问狗品种；1000 类配置继续使用完整 ImageNet 的物体分类问题。候选集与问题均不同，因此两轮频率的差异同时受到任务设计影响，不能当成模型内在 confidence 的直接比较。
+
+每轮先用原图 32 次回答选出出现最多的类别并固定。之后的每个扰动与最终评分仍使用该轮完整候选集；固定目标只是指定统计哪一类的频率，不会把调用改成 Afghan/其他、Walker/其他的二分类。目标选择、优化探针和最终原图/保留图/移除图评估使用独立回答。
+
+| 项目 | 新配置，共用于两种候选集 |
+| --- | --- |
+| Model / generation | Vertex `gemini-3.5-flash-lite`，MINIMAL，最多 128 output tokens，provider default temperature 1.0 |
+| 图像与表示 | 256×256 stretch，4 scales、49 bands，RGB 共用 mask 和 grayscale coefficient noise |
+| Mask | 每 band 4×4 网格，共 784 参数，初始全 1 |
+| Optimizer | Hybrid Adam，50 步；每步两个 SPSA 方向；lr 0.03，radius 初值 0.15 |
+| 采样 | 每张探针图片 4 次回答，每步 2 个重新采样的 uniform coefficient noise |
+| Fidelity / 正则 | 无偏 squared distortion，参考值 1；mask L1 权重 1、spatial L1 权重 2 |
+| 最终验证 | 原图、最终保留图、移除图各 128 个独立回答 |
+| 请求预算 | 名义上界 2836，加全局 32 次重试为 **2868**；整轮硬上限 **3000** |
+
+预算为 `32 + 3×128 + 4×(3 + 2×(1 + 6×50)) + 32 = 2868`；保守计入的优化 reference 复用时少用 4 次。所有重试仍进入同一 audit 日志和硬限制。两种配置目前尚未填写实测 retained frequency、预测类别或结论；这些数值以各自完成后的 `result.json` 为准。它们仍是无图像梯度条件下的 API 适配，不是原论文 150/300 步或 full-resolution mask 的精确 1:1 复现。
+
+## 通用命令与逐步绘图
+
+`experiment` 是通用单图实验命令，`imagenet` 保留为兼容名称。`task` 配置必须二选一：`imagenet_labels_path` 读取完整有序 ImageNet 类别，或 `labels` 显式列出候选；另可设置 `question`。旧的顶层 `labels_path` 配置仍可使用。
+
+```bash
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json --dry-run
+python -m medshearletx experiment --config configs/vertex-afghan-imagenet.json
+python -m medshearletx experiment --config configs/vertex-afghan-fiveway.json
+```
+
+未指定 `--output` 时，每次创建新的 `runs/<run_name>-<timestamp>/`，`run_name` 来自配置。指定 output 时仍要求该目录为空；从其他目录运行可传 `--root`。Dry run 不调用模型，也不创建实验输出目录。
+
+从 step 0 到最后一步，自动保存当前迭代的重建结果：
+
+| 路径 | 内容 |
+| --- | --- |
+| `figures/f_n/stepNNN.png` | 原图、当前保留图、当前移除图与 loss/mask mean |
+| `images/f_n/stepNNN.png` | 当前保留图的原始显示 PNG |
+| `images/removed/stepNNN.png` | 当前移除图的 PNG |
+| `masks/stepNNN.npy` | 对应的粗网格 mask |
+| `metrics.json`、`index.html` | 逐步指标和可直接在本地浏览器打开的 slider |
+
+运行中刷新 `index.html` 可查看最新完成的 step。这些图片直接从当前 mask 与原始系数重建，绘图不增加 API 调用。图中 loss 来自带 coefficient noise 的优化探针；**没有对每一张显示预览另测 VLM score**，因此不能给 step 图写 retained probability 或把 mask mean 当成 confidence。最终选择的 best mask 与最后一个 current mask 可能不同；最终独立验证和 PNG/PDF 图仍单独保存在 `result.json` 及最终图文件中。
 
 ## 导出图
 

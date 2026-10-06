@@ -23,9 +23,9 @@ scatter_data/
 .env.*
 !.env.example
 output/
+runs/
 *.egg-info/
 build/
 dist/
 github-token*.txt
-
 

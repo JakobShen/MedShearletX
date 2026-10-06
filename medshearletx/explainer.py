@@ -67,9 +67,10 @@ class ExplainerConfig:
     normalize_final: bool = False
     unbiased_sampling_distortion: bool = False
     optimizer: str = "spsa"
+    directions: int = 1
 
     def __post_init__(self):
-        for name in ("steps", "grid_size", "noise_samples", "max_requests"):
+        for name in ("steps", "grid_size", "noise_samples", "max_requests", "directions"):
             value = getattr(self, name)
             if type(value) is not int or value < (0 if name == "steps" else 1):
                 raise ValueError(f"{name} must be an integer in its valid range")
@@ -98,7 +99,7 @@ class ExplainerConfig:
     def request_bound(self, repeats=1):
         # Resampled objectives also reevaluate the previous best on this step's
         # common noise batch; losses from different batches are not comparable.
-        probes = 4 if self.resample_noise else 3
+        probes = 2 * self.directions + 1 + int(self.resample_noise)
         return repeats * (3 + self.noise_samples * (1 + probes * self.steps))
 
 
@@ -183,7 +184,9 @@ class BlackBoxShearletX:
 
     def explain(self, image: Image.Image, target=None, reference=None, representation=None,
                 progress: Callable[[dict], None] | None = None,
-                checkpoint: Callable[[np.ndarray, list[dict]], None] | None = None) -> Explanation:
+                checkpoint: Callable[[np.ndarray, list[dict]], None] | None = None,
+                on_iteration: Callable[[np.ndarray, dict], None] | None = None) -> Explanation:
+        """Explain an image; checkpoints use the best mask, previews the current mask."""
         cfg = self.config
         repeats = self.scorer.repeats if self.scorer.mode == "agreement" else 1
         bound = cfg.request_bound(repeats)
@@ -270,33 +273,48 @@ class BlackBoxShearletX:
             return {"loss": float(loss), "distortion": float(distortion),
                     "mask_energy": mask_energy, "spatial_energy": spatial_energy}
 
-        mask = np.full((bands, cfg.grid_size, cfg.grid_size), cfg.mask_init)
+        mask = np.full((bands, cfg.grid_size, cfg.grid_size), cfg.mask_init, dtype=np.float64)
         adam_mean, adam_variance = np.zeros_like(mask), np.zeros_like(mask)
         best_mask = mask.copy()
+        best_step = 0
         best = objective(mask)
-        history = [dict(step=0, requests=requests, **best)]
+        history = [dict(step=0, requests=requests, best_step=best_step, **best)]
         if checkpoint is not None:
             checkpoint(best_mask.copy(), list(history))
+        if on_iteration is not None:
+            on_iteration(mask.copy(), dict(history[-1]))
         for step in range(1, cfg.steps + 1):
             if cfg.resample_noise:
                 noise = draw_noise()
-            direction = rng.choice([-1., 1.], size=mask.shape)
             radius = cfg.perturbation_size / step ** 0.101
-            plus_mask = np.clip(mask + radius * direction, 0, 1)
-            minus_mask = np.clip(mask - radius * direction, 0, 1)
-            plus = objective(plus_mask)
-            minus = objective(minus_mask)
+            gradient = np.zeros_like(mask)
+            probe_distortions = []
+            for _ in range(cfg.directions):
+                direction = rng.choice([-1., 1.], size=mask.shape)
+                plus_mask = np.clip(mask + radius * direction, 0, 1)
+                minus_mask = np.clip(mask - radius * direction, 0, 1)
+                plus = objective(plus_mask)
+                minus = objective(minus_mask)
+                probe_distortions.append([plus["distortion"], minus["distortion"]])
+                if cfg.optimizer == "hybrid_adam":
+                    gradient += cfg.distortion_weight * clipped_spsa_gradient(
+                        plus["distortion"], minus["distortion"], plus_mask, minus_mask)
+                else:
+                    gradient += (plus["loss"] - minus["loss"]) / (2 * radius) * direction
+            gradient /= cfg.directions
+            fidelity_gradient_norm = float(np.linalg.norm(gradient))
+            previous_mask = mask.copy()
+            regularizer_gradient_norm = None
             if cfg.optimizer == "hybrid_adam":
-                gradient = cfg.distortion_weight * clipped_spsa_gradient(
-                    plus["distortion"], minus["distortion"], plus_mask, minus_mask)
-                gradient += self._regularizer_gradient(mask, coeffs, y_index, x_index)
+                regularizer_gradient = self._regularizer_gradient(mask, coeffs, y_index, x_index)
+                regularizer_gradient_norm = float(np.linalg.norm(regularizer_gradient))
+                gradient += regularizer_gradient
                 adam_mean = 0.9 * adam_mean + 0.1 * gradient
                 adam_variance = 0.999 * adam_variance + 0.001 * gradient ** 2
                 corrected_mean = adam_mean / (1 - 0.9 ** step)
                 corrected_variance = adam_variance / (1 - 0.999 ** step)
                 mask = np.clip(mask - cfg.learning_rate * corrected_mean / (np.sqrt(corrected_variance) + 1e-8), 0, 1)
             else:
-                gradient = (plus["loss"] - minus["loss"]) / (2 * radius) * direction
                 rate = cfg.learning_rate / step ** 0.602
                 mask = np.clip(mask - rate * gradient, 0, 1)
             current = objective(mask)
@@ -304,10 +322,17 @@ class BlackBoxShearletX:
                 best = objective(best_mask)
             if current["loss"] < best["loss"]:
                 best, best_mask = current, mask.copy()
-            record = dict(step=step, requests=requests, best_loss=best["loss"], **current)
+                best_step = step
+            record = dict(step=step, requests=requests, best_loss=best["loss"],
+                          best_step=best_step, probe_distortions=probe_distortions,
+                          estimated_gradient_norm=fidelity_gradient_norm,
+                          regularizer_gradient_norm=regularizer_gradient_norm,
+                          mean_mask_change=float(np.mean(np.abs(mask - previous_mask))), **current)
             history.append(record)
             if checkpoint is not None:
                 checkpoint(best_mask.copy(), list(history))
+            if on_iteration is not None:
+                on_iteration(mask.copy(), dict(record))
             if progress is not None:
                 progress(record)
         dense = expand(best_mask)
@@ -329,6 +354,7 @@ class BlackBoxShearletX:
                          "finite_difference_denominator": "actual_clipped_probe_displacement" if cfg.optimizer == "hybrid_adam" else "symmetric_nominal_radius",
                          "requests": requests, "request_bound": bound,
                          "mask_parameters": int(best_mask.size), "coefficient_shape": list(coeffs.shape),
+                         "perturbation_directions": cfg.directions, "selected_step": best_step,
                          "mask_energy": best["mask_energy"], "spatial_energy": best["spatial_energy"],
                          "probability_drop_removed": before - removed_result.probabilities[target],
                          "retained_probability_ratio": retained_result.probabilities[target] / before if before > 0 else None,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .types import ClassificationTask
@@ -13,6 +14,34 @@ IMAGENET_QUESTION = (
     "What is the dominant object visible in this image? "
     "Classify it using the complete ImageNet-1k candidate set."
 )
+
+CLASSIFICATION_QUESTION = (
+    "What is the dominant object visible in this image? "
+    "Classify it using the complete candidate set."
+)
+
+
+def load_task(config: Mapping, *, root: str | Path = ".") -> ClassificationTask:
+    """Create one generic or complete ImageNet task from a task config.
+
+    Specify exactly one of ``labels`` (an ordered sequence) or
+    ``imagenet_labels_path`` (relative to ``root``, or an absolute path).
+    An optional ``question`` changes the question without changing class names
+    or output codes. The supplied mapping is never modified.
+    """
+    if not isinstance(config, Mapping):
+        raise ValueError("task config must be a mapping")
+    if ("labels" in config) == ("imagenet_labels_path" in config):
+        raise ValueError("task requires exactly one of labels or imagenet_labels_path")
+    if "imagenet_labels_path" in config:
+        path = config["imagenet_labels_path"]
+        if not isinstance(path, (str, Path)) or isinstance(path, str) and not path.strip():
+            raise ValueError("imagenet_labels_path must be a nonempty path")
+        return load_imagenet_task(Path(root) / path, question=config.get("question", IMAGENET_QUESTION))
+    labels = config["labels"]
+    if not isinstance(labels, Sequence) or isinstance(labels, (str, bytes)):
+        raise ValueError("labels must be an ordered sequence of class names")
+    return ClassificationTask(tuple(labels), config.get("question", CLASSIFICATION_QUESTION))
 
 
 def load_imagenet_task(

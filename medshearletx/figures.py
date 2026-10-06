@@ -107,3 +107,37 @@ def save_explanation_figure(
                 paths[f"{stem}_{suffix}"] = str(path)
             figure.clear()
     return paths
+
+
+def save_optimization_figure(history, output_dir: str | Path) -> dict[str, str]:
+    """Plot sampled training objectives and local penalties, without rescoring."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    output = Path(output_dir).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    figure = Figure(figsize=(11, 4.6), dpi=150, facecolor="white")
+    FigureCanvasAgg(figure)
+    axes = figure.subplots(1, 2)
+    steps = [row["step"] for row in history]
+    for name, label in (("loss", "Total training loss"), ("distortion", "Sampled fidelity distortion")):
+        axes[0].plot(steps, [row[name] for row in history], label=label)
+    for name, label in (("mask_energy", "Mean mask value"), ("spatial_energy", "Spatial L1 mean")):
+        axes[1].plot(steps, [row[name] for row in history], label=label)
+    for axis in axes:
+        axis.set_xlabel("Optimization step")
+        axis.grid(alpha=0.25)
+        axis.legend(fontsize=9)
+    axes[0].set_title("Noisy training estimates")
+    axes[1].set_title("Local sparsity penalties")
+    figure.suptitle("ShearletX optimization history")
+    figure.text(0.5, 0.025, "Training estimates use resampled noisy images; final clean-image validation is independent.",
+                ha="center", fontsize=9)
+    figure.subplots_adjust(left=0.065, right=0.98, bottom=0.16, top=0.82, wspace=0.25)
+    paths = {}
+    for suffix in ("png", "pdf"):
+        path = output / f"optimization.{suffix}"
+        figure.savefig(path, dpi=150)
+        paths[f"optimization_{suffix}"] = str(path)
+    figure.clear()
+    return paths

@@ -23,6 +23,54 @@ class ConstantBackend:
 
 
 class ExplainerTests(unittest.TestCase):
+    def test_iteration_preview_uses_current_mask_when_checkpoint_keeps_earlier_best(self):
+        class CandidateFailure(ConstantBackend):
+            calls = 0
+
+            def predict(self, *args, **kwargs):
+                self.calls += 1
+                probability = 0.1 if self.calls == 5 else 0.8
+                return Prediction(label_logprobs={"bright": math.log(probability),
+                                                 "dark": math.log(1 - probability)})
+
+        scorer = Scorer(CandidateFailure(), ClassificationTask(("bright", "dark"), "Is it bright?"))
+        config = ExplainerConfig(steps=1, grid_size=2, mask_init=1, optimizer="hybrid_adam",
+                                mask_weight=1, spatial_weight=0)
+        previews, checkpoints = [], []
+        result = BlackBoxShearletX(scorer, IdentityTransform(), config).explain(
+            Image.fromarray(np.full((16, 16, 3), 128, dtype=np.uint8)),
+            on_iteration=lambda mask, row: previews.append((mask, row)),
+            checkpoint=lambda mask, history: checkpoints.append(mask),
+        )
+        self.assertEqual([row["step"] for _, row in previews], [0, 1])
+        self.assertAlmostEqual(previews[-1][0].mean(), previews[-1][1]["mask_energy"])
+        self.assertLess(previews[-1][0].mean(), checkpoints[-1].mean())
+        np.testing.assert_array_equal(result.mask, checkpoints[-1])
+        self.assertEqual(result.diagnostics["selected_step"], 0)
+
+    def test_multiple_directions_budget_counts_each_probe_and_rejects_before_calls(self):
+        scorer = Scorer(ConstantBackend(), ClassificationTask(("bright", "dark"), "Is it bright?"),
+                        mode="agreement", repeats=4)
+        config = ExplainerConfig(steps=2, grid_size=2, directions=2, noise_samples=2,
+                                resample_noise=True, optimizer="hybrid_adam", max_requests=200)
+        expected = 4 * (3 + 2 * (1 + 6 * 2))
+        self.assertEqual(config.request_bound(4), expected)
+        result = BlackBoxShearletX(scorer, IdentityTransform(), config).explain(
+            Image.fromarray(np.full((16, 16, 3), 128, dtype=np.uint8)))
+        self.assertEqual(scorer.requests, expected)
+        self.assertEqual(result.diagnostics["perturbation_directions"], 2)
+        self.assertEqual(len(result.history[-1]["probe_distortions"]), 2)
+        for invalid in (0, True, 1.5):
+            with self.assertRaises(ValueError):
+                ExplainerConfig(directions=invalid)
+        refused = Scorer(ConstantBackend(), scorer.task, mode="agreement", repeats=4)
+        with self.assertRaisesRegex(ValueError, "requests"):
+            BlackBoxShearletX(refused, IdentityTransform(),
+                             ExplainerConfig(steps=2, directions=2, noise_samples=2,
+                                             resample_noise=True, max_requests=expected-1)).explain(
+                Image.fromarray(np.full((16, 16, 3), 128, dtype=np.uint8)))
+        self.assertEqual(refused.requests, 0)
+
     def test_checkpoint_preserves_best_mask_before_later_provider_failure(self):
         class FailingBackend(ConstantBackend):
             calls = 0

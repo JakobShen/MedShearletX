@@ -1,6 +1,7 @@
 """Dataset orchestration and inspectable per-image comparison artifacts."""
 
 import json
+from importlib.util import find_spec
 import time
 from pathlib import Path
 
@@ -11,8 +12,9 @@ from .backends import BackendRequestError, create_backend
 from .data import ImageDataset
 from .explainer import BlackBoxShearletX, ExplainerConfig
 from .scoring import Scorer
+from .tasks import load_task
 from .transforms import create_transform
-from .types import CapabilityError, ClassificationTask, InvalidPredictionError
+from .types import CapabilityError, InvalidPredictionError
 
 
 def write_json(path, value):
@@ -27,7 +29,7 @@ def describe_result(result, target):
 
 
 def prepare(config, scores=None):
-    task = ClassificationTask(config["task"]["labels"], config["task"]["question"])
+    task = load_task(config["task"], root=config.get("root", "."))
     modes = scores or config.get("scores", ["probability", "log_margin", "agreement"])
     if not modes or len(set(modes)) != len(modes) or any(m not in {"probability", "log_margin", "agreement"} for m in modes):
         raise ValueError("scores must contain distinct probability, log_margin or agreement modes")
@@ -37,6 +39,8 @@ def prepare(config, scores=None):
     settings = config.get("sampling", {})
     scorers = {mode: Scorer(backend, task, mode=mode, **settings) for mode in modes}
     optimizer = ExplainerConfig(**config.get("explainer", {}))
+    if type(config.get("step_visuals", True)) is not bool:
+        raise ValueError("step_visuals must be a boolean")
     size = config.get("image_size", 128)
     if type(size) is not int or size < 16 or optimizer.grid_size > size:
         raise ValueError("image_size must be an integer >=16 and >= grid_size")
@@ -136,10 +140,25 @@ def run(config, dataset: ImageDataset, output, *, limit=1, scores=None,
                 if probe:
                     row.update(status="ok", requests=reference_requests)
                 else:
-                    explanation = BlackBoxShearletX(scorer, transform, optimizer).explain(
-                        image, fixed_target, reference=reference, representation=representation)
+                    from .step_visuals import StepVisualizer
                     mode_folder = folder / mode
                     mode_folder.mkdir()
+                    visualizer = None
+                    if config.get("step_visuals", True):
+                        if find_spec("matplotlib") is None:
+                            row["iteration_visuals_unavailable"] = "Install the figures extra: pip install -e '.[figures]'"
+                            if progress:
+                                progress(row["iteration_visuals_unavailable"])
+                        else:
+                            visualizer = StepVisualizer(
+                                mode_folder, image, transform, representation[1],
+                                model=config["model"].get("model", getattr(scorer.backend, "model", mode)),
+                                target_label=fixed_target, normalize_final=optimizer.normalize_final,
+                                grid_size=optimizer.grid_size,
+                            )
+                    explanation = BlackBoxShearletX(scorer, transform, optimizer).explain(
+                        image, fixed_target, reference=reference, representation=representation,
+                        on_iteration=visualizer)
                     explanation.image.save(mode_folder / "retained.png")
                     explanation.removed_image.save(mode_folder / "removed.png")
                     np.save(mode_folder / "mask.npy", explanation.mask)
@@ -148,6 +167,8 @@ def run(config, dataset: ImageDataset, output, *, limit=1, scores=None,
                                removed=describe_result(explanation.removed, fixed_target),
                                diagnostics=explanation.diagnostics,
                                requests=reference_requests + explanation.diagnostics["requests"])
+                    if visualizer is not None:
+                        row["iteration_index"] = f"{index:04d}/{mode}/index.html"
             except (CapabilityError, InvalidPredictionError, BackendRequestError) as exc:
                 # No automatic method switch: comparison records unsupported modes explicitly.
                 row.update(status="unavailable", error=str(exc), target=fixed_target)

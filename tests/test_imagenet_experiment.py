@@ -187,6 +187,88 @@ class ImageNetExperimentTests(unittest.TestCase):
         self.assertEqual(plan["model"]["model"], "gemini-3.5-flash-lite")
         self.assertFalse(output.exists())
 
+    def test_generic_five_and_complete_imagenet_task_planning(self):
+        for definition, classes in (({"labels": ["Afghan hound", "beagle", "poodle", "cat", "bird"]}, 5),
+                                    ({"imagenet_labels_path": "labels.py"}, 1000)):
+            config = json.loads(json.dumps(self.config))
+            del config["labels_path"]
+            config["task"] = definition
+            config["image_metadata"] = {"source": "offline fixture", "reference_label": "Afghan hound"}
+            task, dataset, _, _, _, _, plan = prepare_experiment(config, self.root)
+            self.assertEqual(len(task.labels), classes)
+            self.assertEqual(plan["classes"], classes)
+            self.assertEqual(dataset[0].sample_id, "image")
+            self.assertEqual(dataset[0].metadata, config["image_metadata"])
+            self.assertNotIn("paper_predicted_class", dataset[0].metadata)
+            self.assertEqual(config["task"], definition)
+
+    def test_generic_run_automatically_saves_current_iteration_visuals(self):
+        config = json.loads(json.dumps(self.config))
+        config["task"] = {"labels": ["Afghan hound", "beagle", "poodle", "cat", "bird"]}
+        del config["labels_path"]
+        config["sample_id"] = "afghan_fixture"
+        config["image_metadata"] = {"source": "offline fixture"}
+        config["explainer"].update(steps=1, mask_init=1, max_requests=14)
+        config["max_total_requests"] = 28
+        backend = UsageMockBackend()
+        output = self.root / "generic-run"
+        progress = []
+        with patch("medshearletx.imagenet_experiment.create_backend", return_value=backend):
+            result = run_experiment(config, self.root, output, progress=progress.append)
+        self.assertEqual(result["classes"], 5)
+        self.assertEqual(result["sample_id"], "afghan_fixture")
+        self.assertEqual(result["image_metadata"], config["image_metadata"])
+        self.assertIsNone(result["paper_predicted_class"])
+        self.assertEqual(result["requests"], 26)  # Visual export adds no predictions.
+        self.assertTrue(all(call[0] == 5 for call in backend.calls))
+        self.assertIn("full 5-class task", progress[0])
+        for step in (0, 1):
+            for folder, suffix in (("images/f_n", "png"), ("images/removed", "png"),
+                                   ("figures/f_n", "png"), ("masks", "npy")):
+                self.assertTrue((output / folder / f"step{step:03d}.{suffix}").is_file())
+        with Image.open(output / "input.png") as image:
+            original = np.asarray(image)
+        with Image.open(output / "images/f_n/step000.png") as kept:
+            np.testing.assert_array_equal(np.asarray(kept), original)
+        mask = np.load(output / "masks/step001.npy")
+        indices = np.arange(16) * 2 // 16
+        dense = mask[0, indices[:, None], indices[None, :]][:, :, None]
+        expected = np.rint(original * dense).astype(np.uint8)
+        with Image.open(output / "images/f_n/step001.png") as kept:
+            np.testing.assert_array_equal(np.asarray(kept), expected)
+        metrics = self._read(output / "metrics.json")
+        history = self._read(output / "history.json")
+        self.assertEqual([row["loss"] for row in metrics["steps"]], [row["loss"] for row in history])
+        self.assertEqual(metrics["final"]["selected_step"], result["optimization_diagnostics"]["selected_step"])
+        self.assertEqual(metrics["final"]["samples"][1]["count"], result["retained"]["sample_counts"][result["target"]])
+        self.assertTrue(Path(result["step_visuals"]["index"]).is_file())
+        self.assertTrue((output / "optimization.png").is_file())
+        self.assertEqual(set(result["optimization_figures"]), {"optimization_png", "optimization_pdf"})
+
+    def test_experiment_cli_alias_uses_default_run_folder_and_explicit_output(self):
+        config = json.loads(json.dumps(self.config))
+        config["run_name"] = "afghan-five"
+        config["task"] = {"labels": ["a", "b", "c", "d", "e"]}
+        del config["labels_path"]
+        config_path = self.root / "fiveway.json"
+        config_path.write_text(json.dumps(config))
+        for explicit in (None, self.root / "chosen-output"):
+            arguments = ["experiment", "--config", str(config_path), "--root", str(self.root), "--dry-run"]
+            if explicit:
+                arguments.extend(("--output", str(explicit)))
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(arguments), 0)
+            plan = json.loads(stdout.getvalue())
+            self.assertEqual(plan["classes"], 5)
+            destination = Path(plan["output"])
+            if explicit:
+                self.assertEqual(destination, explicit)
+            else:
+                self.assertEqual(destination.parent, self.root / "runs")
+                self.assertRegex(destination.name, r"^afghan-five-\d{8}-\d{6}$")
+            self.assertFalse(destination.exists())
+
     @staticmethod
     def _counts(records, task):
         counts = dict.fromkeys(task.labels, 0)

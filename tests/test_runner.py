@@ -39,6 +39,8 @@ class RunnerTests(unittest.TestCase):
         for mode in ("probability", "log_margin", "agreement"):
             for name in ("retained.png", "removed.png", "mask.npy", "history.json"):
                 self.assertTrue((output / "0000" / mode / name).exists())
+            self.assertTrue((output / "0000" / mode / "figures/f_n/step001.png").is_file())
+            self.assertTrue((output / "0000" / mode / "index.html").is_file())
         summary = json.loads((output / "summary.json").read_text())
         self.assertLessEqual(summary["prediction_attempts"], summary["request_bound"])
         self.assertEqual(sum(row["requests"] for row in rows), summary["prediction_attempts"])
@@ -95,6 +97,16 @@ class RunnerTests(unittest.TestCase):
         stretch, metadata = preprocess(source, {**self.config, "resize_mode": "stretch"})
         self.assertEqual(metadata["mode"], "stretch")
         self.assertEqual(stretch.getpixel((16, 0)), (255, 255, 255))
+
+    def test_missing_optional_plotting_dependency_preserves_core_run(self):
+        self.config["scores"] = ["probability"]
+        output = self.root / "without-figures"
+        with patch("medshearletx.runner.find_spec", return_value=None):
+            rows = run(self.config, self.dataset, output)
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertIn("figures", rows[0]["iteration_visuals_unavailable"])
+        self.assertNotIn("iteration_index", rows[0])
+        self.assertTrue((output / "0000/probability/retained.png").is_file())
 
 
 if __name__ == "__main__":

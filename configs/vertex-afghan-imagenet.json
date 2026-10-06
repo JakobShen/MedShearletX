@@ -1,0 +1,67 @@
+{
+  "model": {
+    "backend": "vertex",
+    "model": "gemini-3.5-flash-lite",
+    "api_key_env": "VERTEX_API_KEY",
+    "max_output_tokens": 128,
+    "generation_options": {
+      "thinkingConfig": {
+        "thinkingLevel": "MINIMAL"
+      }
+    }
+  },
+  "task": {
+    "imagenet_labels_path": "code/imagenet_utils/imagenet_labels.py"
+  },
+  "image_path": "code/imgs/ILSVRC2012_val_00017625.JPEG",
+  "image_size": 256,
+  "resize_mode": "stretch",
+  "transform": {
+    "name": "shearlet",
+    "scales": 4
+  },
+  "selection_samples": 32,
+  "evaluation_samples": 128,
+  "evaluation_workers": 8,
+  "optimization_sampling": {
+    "repeats": 4,
+    "temperature": 1.0,
+    "workers": 4
+  },
+  "retry": {
+    "retry_budget": 32,
+    "max_attempts": 3,
+    "backoff_seconds": 0.5
+  },
+  "explainer": {
+    "steps": 50,
+    "grid_size": 4,
+    "learning_rate": 0.03,
+    "perturbation_size": 0.15,
+    "mask_init": 1.0,
+    "distortion_weight": 1.0,
+    "mask_weight": 1.0,
+    "spatial_weight": 2.0,
+    "noise": "uniform",
+    "noise_samples": 2,
+    "noise_workers": 2,
+    "seed": 42,
+    "fidelity_reference": "one",
+    "noise_channels": "shared_gray",
+    "resample_noise": true,
+    "spatial_domain": "gray_clipped",
+    "normalize_final": true,
+    "unbiased_sampling_distortion": true,
+    "optimizer": "hybrid_adam",
+    "max_requests": 2500,
+    "directions": 2
+  },
+  "max_total_requests": 3000,
+  "run_name": "vertex-afghan-imagenet",
+  "sample_id": "imagenet_afghan_hound_00017625",
+  "image_metadata": {
+    "source": "original repository ImageNet JPEG",
+    "example_breed": "Afghan hound",
+    "label_source": "upstream notebook example, not independently adjudicated"
+  }
+}

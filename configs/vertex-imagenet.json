@@ -6,6 +6,11 @@
   },
   "labels_path": "code/imagenet_utils/imagenet_labels.py",
   "image_path": "code/imgs/english_foxhound_paper.png",
+  "sample_id": "paper_english_foxhound",
+  "image_metadata": {
+    "source": "arXiv:2211.12857v3, page 1, embedded original photo",
+    "paper_predicted_class": "English foxhound", "paper_class_index": 167
+  },
   "image_size": 256, "resize_mode": "stretch",
   "transform": {"name": "shearlet", "scales": 4},
   "selection_samples": 64, "evaluation_samples": 128, "evaluation_workers": 8,
